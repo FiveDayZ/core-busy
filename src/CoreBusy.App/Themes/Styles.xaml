@@ -350,6 +350,18 @@
             <DataTrigger Binding="{Binding Level}" Value="0">
                 <Setter Property="Background" Value="{DynamicResource CoreBusyTrackBrush}" />
             </DataTrigger>
+            <!--
+                Level 0 但当天确有读数 → 不定档（观测不足，或本月参照日数不足）。
+                必须排在 Level=0 之后：XAML 触发器后置者胜，否则会落回 Track 灰、
+                被读成「无记录」，那就又回到"把没看够当成没用电"的老问题上。
+            -->
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding HasRecord}" Value="True" />
+                    <Condition Binding="{Binding IsRanked}" Value="False" />
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource CoreBusyCalendarPendingBrush}" />
+            </MultiDataTrigger>
             <DataTrigger Binding="{Binding Level}" Value="1">
                 <Setter Property="Background" Value="{DynamicResource CoreBusyHeat1Brush}" />
             </DataTrigger>

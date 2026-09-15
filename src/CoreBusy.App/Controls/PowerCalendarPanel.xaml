@@ -18,8 +18,10 @@
 
                 <TextBlock Grid.Column="1" Margin="7,0,0,0" VerticalAlignment="Center"
                            Style="{StaticResource SectionTitleText}" Text="能耗日历"
-                           ToolTip="按自然日累计 CPU 封装功耗，颜色越深代表当天耗电越多。
-&#10;仅统计本程序运行期间的观测值（封装功耗需管理员权限读取），不等于整机全天耗电。" />
+                           ToolTip="颜色深浅按当天【平均】CPU 封装功耗定档（不是累计耗电），越深代表机器平均负载越重 —— 与程序开了多久无关。
+&#10;基准是本月达标日的平均功率中位数，所以颜色只表示「相对本月常见水平」。
+&#10;仅统计本程序运行期间的观测值（封装功耗需管理员权限读取）；观测不足 1 小时的日子不定档，单独标记。
+&#10;不代表整机全天耗电。" />
 
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Style="{StaticResource MonthNavButtonStyle}" Click="OnPrevMonthClick"
@@ -83,11 +85,15 @@
                 <TextBlock Grid.Column="0" Text="{Binding CalendarSummaryText}" Style="{StaticResource WeakText}"
                            FontSize="10.5" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" />
+                <!--
+                    v1.19.2：把「无数据」色块移出色带。原先它紧贴「少」字右侧，等于把"没观测到"
+                    画成了"最少" —— 用户读到的是一条连续的少→多刻度，而第一个刻度根本不是量。
+                    无记录现在只靠空白表达（不需要图例），腾出的位置给真正需要说明的
+                    「有读数但不定档」，它才是新口径下唯一非自明的状态。
+                -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="少" Style="{StaticResource WeakText}" FontSize="10" />
                     <Border Width="8" Height="8" CornerRadius="2" Margin="4,0,0,0"
-                            Background="{DynamicResource CoreBusyTrackBrush}" />
-                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
                             Background="{DynamicResource CoreBusyHeat1Brush}" />
                     <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
                             Background="{DynamicResource CoreBusyHeat2Brush}" />
@@ -98,6 +104,10 @@
                     <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
                             Background="{DynamicResource CoreBusyHeat6Brush}" />
                     <TextBlock Text="多" Style="{StaticResource WeakText}" FontSize="10" Margin="4,0,0,0" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="7,0,0,0"
+                            Background="{DynamicResource CoreBusyCalendarPendingBrush}" />
+                    <TextBlock Text="不定档" Style="{StaticResource WeakText}" FontSize="10"
+                               Margin="4,0,0,0" />
                 </StackPanel>
             </Grid>
 

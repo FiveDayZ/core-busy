@@ -1661,23 +1661,35 @@ public sealed class DashboardViewModel : ObservableObject
         var first = _calendarMonth;
         var daysInMonth = DateTime.DaysInMonth(first.Year, first.Month);
 
-        // 归一化基准取**当月最高的一天**：跨温度工况量级不同（轻薄本 15W、桌面 150W），
-        // 用绝对阈值定档会让低压平台永远一片浅色，失去日历的比较意义。
-        double peak = 0;
+        // 定档参照取**达标日平均功率的中位数**。两处刻意的选择（v1.19.2 改口径，依据见
+        // PowerCalendarDayVm 类注释里的真机实测）：
+        //   · 不用累计焦耳：累计值 = 平均功率 × 观测时长，会把「程序开了多久」混进
+        //     「机器用得多不多」——实测四天累计相差 3.08 倍，平均功率只差 1.54 倍；
+        //   · 不用当月最大值：极值定义上使「最高那天」恒为 5 档，一个异常日就能压平整月。
+        // 跨平台量级差异仍由"相对参照"而非绝对阈值解决，这一点与原实现一致。
+        // 达标 = 当天有读数且观测 ≥ MinRankableObservedSeconds；没看够的日子不参与建立参照。
         double monthTotal = 0;
         var recordedDays = 0;
+        var fulfilledWatt = new List<double>();
 
         for (var offset = 0; offset < daysInMonth; offset++)
         {
-            var joules = _energyLedger.JoulesOf(first.AddDays(offset));
+            var date = first.AddDays(offset);
+            var joules = _energyLedger.JoulesOf(date);
             if (joules <= 0)
                 continue;
 
             recordedDays++;
             monthTotal += joules;
-            if (joules > peak)
-                peak = joules;
+
+            var seconds = _energyLedger.SecondsOf(date);
+            if (seconds >= PowerCalendarDayVm.MinRankableObservedSeconds)
+                fulfilledWatt.Add(joules / seconds);
         }
+
+        // 参照算法（中位数 + 最少日数门槛）住在 PowerCalendarDayVm.ReferenceFrom，
+        // 单一来源，探针可直接调用断言。
+        var referenceWatt = PowerCalendarDayVm.ReferenceFrom(fulfilledWatt);
 
         // 网格起点：周一为一周之始（大陆日历习惯），先回退到落在该周周一的那天。
         var leading = ((int)first.DayOfWeek - 1 + 7) % 7;
@@ -1693,7 +1705,7 @@ public sealed class DashboardViewModel : ObservableObject
                 inMonth ? _energyLedger.JoulesOf(date) : 0,
                 inMonth ? _energyLedger.SecondsOf(date) : 0,
                 inMonth && _energyLedger.HasRecord(date),
-                peak,
+                referenceWatt,
                 inMonth,
                 today);
         }
@@ -1706,7 +1718,11 @@ public sealed class DashboardViewModel : ObservableObject
             ? (_monitor.SensorsEnabled
                 ? "无记录 · 尚无有效读数"
                 : "无记录 · 硬件传感器未启用")
-            : $"本月 {CumulativeEnergyTracker.FormatEnergy(monthTotal)} · 记录 {recordedDays} 天";
+            : referenceWatt > 0
+                ? $"本月 {CumulativeEnergyTracker.FormatEnergy(monthTotal)} · 记录 {recordedDays} 天"
+                    + $" · 常见日 {referenceWatt:0} W"
+                : $"本月 {CumulativeEnergyTracker.FormatEnergy(monthTotal)} · 记录 {recordedDays} 天"
+                    + " · 参照不足";
         CanGoNextMonth = first < FirstOfMonth(today);
         _lastCalendarRefresh = DateTime.Now;
     }

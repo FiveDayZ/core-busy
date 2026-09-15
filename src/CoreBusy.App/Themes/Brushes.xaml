@@ -43,6 +43,14 @@
     <SolidColorBrush x:Key="CoreBusyHeat5Brush" Color="{StaticResource CBHeat5Color}" />
     <SolidColorBrush x:Key="CoreBusyHeat6Brush" Color="{StaticResource CBHeat6Color}" />
 
+    <!--
+        能耗日历专用：当天有读数、但不足以给出多/少结论（观测不足 1 小时，或本月达标日数不足）。
+        刻意用色带之外的**低饱和紫灰** —— 既不能与 Track（#3A3A3A，纯灰＝「无记录」）混同，
+        也不能落进 Heat0..6 的冷灰→橄榄→琥珀→橙→红色带而被读成某个负载档。
+        v1.19.2 之前这类日子没有独立外观，会被当成「最少」那一档画出来。
+    -->
+    <SolidColorBrush x:Key="CoreBusyCalendarPendingBrush" Color="#5A4A78" />
+
     <!--  辉光画刷已废弃：保留资源键置空，避免残留引用解析失败  -->
     <SolidColorBrush x:Key="CoreBusyGlow1Brush" Color="#00000000" />
     <SolidColorBrush x:Key="CoreBusyGlow2Brush" Color="#00000000" />
