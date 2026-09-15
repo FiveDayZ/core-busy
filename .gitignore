@@ -1,0 +1,45 @@
+# ============================================================
+# CORE-BUSY .gitignore
+# 原则：只提交「源码 + 文档 + 脚本」，不提交构建产物与内部取证数据。
+# 体积依据（2026-09-15 实测）：
+#   src 全量 273 MB → 剔除 bin/obj 后仅 0.94 MB（134 文件）
+#   dist/ 590 MB，其中 dist/CoreBusy.App.exe = 159.1 MB，
+#   超过 GitHub 单文件 100 MB 硬上限，必须排除（否则 push 被拒）。
+#   .workbuddy/ 114 MB，为内部取证工程与工作记忆，不入库。
+# ============================================================
+
+# ---- 构建产物 ----
+[Bb]in/
+[Oo]bj/
+dist/
+_publish/
+_publish-lite/
+
+# ---- IDE / 工具 ----
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ---- 日志与临时文件 ----
+*.log
+build-log.txt
+@AutomationLog.txt
+*.tmp
+*.bak
+~$*
+
+# ---- Python 字节码缓存 ----
+__pycache__/
+*.py[cod]
+
+# ---- 内部取证数据与工作记忆（含机器名/个人上下文，不公开）----
+.workbuddy/
+
+# ---- 操作系统 ----
+Thumbs.db
+Desktop.ini
+.DS_Store

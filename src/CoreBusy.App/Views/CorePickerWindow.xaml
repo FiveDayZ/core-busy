@@ -1,0 +1,76 @@
+<Window x:Class="CoreBusy.App.Views.CorePickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="选择核心" Width="560" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{StaticResource CoreBusyBackgroundBrush}"
+        TextElement.Foreground="{StaticResource CoreBusyTextPrimaryBrush}">
+
+    <StackPanel Margin="16">
+        <TextBlock Text="选择允许使用的核心" FontSize="14" FontWeight="SemiBold" />
+        <TextBlock Text="至少保留 1 个逻辑处理器；掩码第 n 位对应操作系统逻辑处理器 n。"
+                   FontSize="11.5" Margin="0,4,0,10"
+                   Foreground="{StaticResource CoreBusyTextWeakBrush}" />
+
+        <StackPanel Orientation="Horizontal">
+            <Button Content="全选" Style="{StaticResource ToolButtonStyle}" Click="OnSelectAll" />
+            <Button Content="全不选" Style="{StaticResource ToolButtonStyle}" Margin="6,0,0,0"
+                    Click="OnSelectNone" />
+            <Button x:Name="PhysicalButton" Content="仅物理核" Style="{StaticResource ToolButtonStyle}"
+                    Margin="6,0,0,0" Click="OnPhysicalOnly" />
+            <Button x:Name="PerformanceButton" Content="仅 P 核" Style="{StaticResource ToolButtonStyle}"
+                    Margin="6,0,0,0" Click="OnPerformanceOnly" />
+            <Button x:Name="EfficiencyButton" Content="仅 E 核" Style="{StaticResource ToolButtonStyle}"
+                    Margin="6,0,0,0" Click="OnEfficiencyOnly" />
+        </StackPanel>
+
+        <ScrollViewer MaxHeight="330" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+            <ItemsControl x:Name="CoresList">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Width="158" Margin="0,0,8,8" CornerRadius="8" Padding="10,8"
+                                Background="{StaticResource CoreBusyCardBrush}"
+                                BorderBrush="{StaticResource CoreBusyBorderWeakBrush}"
+                                BorderThickness="1">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Title}" FontSize="12.5" FontWeight="SemiBold"
+                                               Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
+                                    <Border CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                            Background="{StaticResource CoreBusyAccentDimBrush}"
+                                            Visibility="{Binding BadgeVisibility}">
+                                        <TextBlock Text="{Binding ClassBadge}" FontSize="10.5"
+                                                   Foreground="{StaticResource CoreBusyAccentBrush}" />
+                                    </Border>
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding Threads}" Margin="0,6,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Content="{Binding Label}" FontSize="11.5" Margin="0,3,0,0"
+                                                      IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                                      Click="OnThreadCheck" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <TextBlock x:Name="CountText" FontSize="11.5" Margin="2,6,0,0"
+                   Foreground="{StaticResource CoreBusyTextWeakBrush}" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="取消" Style="{StaticResource ToolButtonStyle}" Click="OnCancel" />
+            <Button x:Name="OkButton" Content="确定" Style="{StaticResource ToolButtonStyle}"
+                    Margin="10,0,0,0" Click="OnOk" />
+        </StackPanel>
+    </StackPanel>
+</Window>

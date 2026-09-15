@@ -1,0 +1,76 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!--
+      v1.19.0 移除 <UseWindowsForms>：托盘图标是它唯一的用途，而它会把
+      System.Windows.Forms.dll(13.5 MB) + .Primitives.dll(3.0 MB) + System.Drawing
+      一并拖进自包含产物（体积）与启动加载（元数据内存）。托盘已改为
+      Infrastructure/TrayIcon.cs 的 WPF 原生实现（Shell_NotifyIcon）。
+    -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>CoreBusy.App</RootNamespace>
+    <AssemblyName>CoreBusy.App</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <Version>1.19.1</Version>
+    <Product>CORE-BUSY</Product>
+    <AssemblyTitle>CORE-BUSY 核忙</AssemblyTitle>
+
+    <!--  任务栏 / Alt-Tab / 资源管理器 显示的应用图标（由 scripts/make_icon.py 生成）  -->
+    <ApplicationIcon>Assets\CoreBusy.ico</ApplicationIcon>
+
+    <!--
+      v1.19.0 **已实测否决**的运行时微调：InvariantGlobalization。
+      曾一度加入（省约 29.5 MB 工作集），但 UI 取证当场判死：
+
+          DISPATCHER UNHANDLED: System.InvalidOperationException:
+            Cannot find non-neutral culture related to 'en-us'.
+            at System.Windows.Markup.XmlLanguage.GetSpecificCulture()
+            at System.Windows.Data.BindingExpressionBase.GetCulture()
+            ... at System.Windows.Window.Show()
+
+      WPF 每个 FrameworkElement 的 Language 默认是 XmlLanguage "en-US"，
+      绑定取值时要把它转成具体 CultureInfo；而 Invariant 模式下创建任何非不变
+      区域性都会抛 CultureNotFoundException —— 于是**每一条数据绑定都在
+      窗口 Show 阶段抛异常**。异常被 App.OnDispatcherUnhandledException
+      吞掉（e.Handled = true），外部表现是：进程存活、内存"下降"约 30 MB、
+      日志里一行 DISPATCHER UNHANDLED，而**主窗口从未渲染出来**。
+
+      两条教训（都写进 .workbuddy/memory/2026-09-14.md）：
+        1. 纯内存 A/B 必须同时验 UI（本项靠 verify_heatmap_scroll.py 的
+           "窗口未出现" 才暴露）；内存变低也可能是"界面没画"。
+        2. Windows 事件日志/异常日志里的分项收益，不能脱离"功能是否仍然成立"采信。
+      本项**不得**重新打开，除非同时解决 WPF 的区域性依赖
+      （例如全局 OverrideMetadata FrameworkElement.LanguageProperty）。
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--  编译为资源，供 Window.Icon 以 pack URI 引用  -->
+    <Resource Include="Assets\CoreBusy.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      v1.19.0 运行时内存微调：GC 内存节流（ConserveMemory）。
+      **为什么用 RuntimeHostConfigurationOption 而不是 -p:GCConserveMemory**：
+      后者在本 SDK（8.0.31）下**没有落进** runtimeconfig.json（已实测：产物里
+      查不到该键，属"以为开了其实没开"的静默失效）；本项是官方支持的直投方式，
+      已实测产物 runtimeconfig.json 内含 "System.GC.ConserveMemory": 5。
+      取值 0–9，5 为推荐起点：更积极地把已空代数归还 OS，压低常驻工作集，
+      代价是极端场景下 GC 次数略增（本应用分配量极低，实测 CPU 无可见变化）。
+    -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CoreBusy.Core\CoreBusy.Core.csproj" />
+    <ProjectReference Include="..\CoreBusy.Windows\CoreBusy.Windows.csproj" />
+    <ProjectReference Include="..\CoreBusy.Sensor\CoreBusy.Sensor.csproj" />
+  </ItemGroup>
+
+</Project>

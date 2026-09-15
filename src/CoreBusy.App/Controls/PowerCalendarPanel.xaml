@@ -1,0 +1,115 @@
+<UserControl x:Class="CoreBusy.App.Controls.PowerCalendarPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Style="{StaticResource PanelCardStyle}" Padding="10,7">
+        <StackPanel>
+
+            <!--  标题 + 翻月  -->
+            <Grid Margin="0,0,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Rectangle Grid.Column="0" Width="3" Height="13" RadiusX="1.5" RadiusY="1.5"
+                           Fill="{StaticResource CoreBusyAccentBrush}" VerticalAlignment="Center" />
+
+                <TextBlock Grid.Column="1" Margin="7,0,0,0" VerticalAlignment="Center"
+                           Style="{StaticResource SectionTitleText}" Text="能耗日历"
+                           ToolTip="按自然日累计 CPU 封装功耗，颜色越深代表当天耗电越多。
+&#10;仅统计本程序运行期间的观测值（封装功耗需管理员权限读取），不等于整机全天耗电。" />
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource MonthNavButtonStyle}" Click="OnPrevMonthClick"
+                            ToolTip="上一个月">
+                        <Path Data="{StaticResource IconChevronLeft}" Stretch="Uniform" Width="7" Height="7"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="2.4" Fill="{x:Null}"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                    </Button>
+                    <TextBlock Text="{Binding CalendarMonthText}" FontSize="11" Margin="7,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource CoreBusyTextSecondaryBrush}" />
+                    <Button Style="{StaticResource MonthNavButtonStyle}" Click="OnNextMonthClick"
+                            IsEnabled="{Binding CanGoNextMonth}" ToolTip="下一个月">
+                        <Path Data="{StaticResource IconChevronRight}" Stretch="Uniform" Width="7" Height="7"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="2.4" Fill="{x:Null}"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!--  周标签（周一起始，大陆日历习惯）  -->
+            <UniformGrid Columns="7" Margin="0,0,0,1">
+                <TextBlock Text="一" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="二" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="三" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="四" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="五" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="六" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+                <TextBlock Text="日" Style="{StaticResource WeakText}" FontSize="10" HorizontalAlignment="Center" />
+            </UniformGrid>
+
+            <!--  日期网格：恒 6 周 × 7 天 = 42 格（见 DashboardViewModel.CalendarCellCount）  -->
+            <ItemsControl ItemsSource="{Binding CalendarDays}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Columns="7" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource CalendarCellStyle}"
+                                ToolTip="{Binding Tooltip}"
+                                ToolTipService.ShowDuration="8000">
+                            <TextBlock Text="{Binding DayText}" FontSize="9.5"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Typography.NumeralAlignment="Tabular"
+                                       Foreground="{DynamicResource CoreBusyTextSecondaryBrush}" />
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!--  汇总 + 图例  -->
+            <Grid Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding CalendarSummaryText}" Style="{StaticResource WeakText}"
+                           FontSize="10.5" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="少" Style="{StaticResource WeakText}" FontSize="10" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="4,0,0,0"
+                            Background="{DynamicResource CoreBusyTrackBrush}" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
+                            Background="{DynamicResource CoreBusyHeat1Brush}" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
+                            Background="{DynamicResource CoreBusyHeat2Brush}" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
+                            Background="{DynamicResource CoreBusyHeat3Brush}" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
+                            Background="{DynamicResource CoreBusyHeat4Brush}" />
+                    <Border Width="8" Height="8" CornerRadius="2" Margin="2,0,0,0"
+                            Background="{DynamicResource CoreBusyHeat6Brush}" />
+                    <TextBlock Text="多" Style="{StaticResource WeakText}" FontSize="10" Margin="4,0,0,0" />
+                </StackPanel>
+            </Grid>
+
+            <!--
+                v1.17.1：口径声明由常驻行改为标题 ToolTip 承载（原文见上方 TextBlock 的 ToolTip：
+                “仅统计本程序运行期间的观测值（封装功耗需管理员权限读取），不等于整机全天耗电”）。
+                动因：右列是**内容撑高**的 ScrollViewer，概览面板新增「健康」行后三段合计超出可视区，
+                这一行是唯一能移走的非数据内容。
+                **代价要说清**：信息没丢，但从「常驻可见」降为「悬停可见」——比删掉它轻，比留着它弱。
+                若日后右列布局再宽松，应当把它搬回常驻位置。
+            -->
+
+        </StackPanel>
+    </Border>
+</UserControl>
