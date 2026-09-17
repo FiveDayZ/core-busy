@@ -220,8 +220,6 @@ public sealed class WindowsCpuOptimizationService : ICpuOptimizationService, IDi
                 // 取证行：没有它，"规则到底有没有真的套上"就只能靠界面猜。
                 // 重复套用已被上面的签名比对挡掉，因此这行不会刷屏 ——
                 // 每个 (进程, 规则内容) 组合一生只写一次。
-                OptimizationLog.Write(
-                    $"applied pid={pid} {LastDetail}{(rule.GameOnly ? " [game-only]" : string.Empty)}");
             }
             else
             {
@@ -416,7 +414,6 @@ public sealed class WindowsCpuOptimizationService : ICpuOptimizationService, IDi
         foreach (var pid in _gameOnlyPids)
             RestoreDefaults(pid);
 
-        OptimizationLog.Write($"game-only rules reverted: {_gameOnlyPids.Count} process(es) ({reason})");
         _gameOnlyPids.Clear();
 
         // 缓存一并清掉：下次进入游戏必须能重新套用，否则签名比对会把它们误判为"已套用"。

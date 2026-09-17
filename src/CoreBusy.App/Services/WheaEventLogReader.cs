@@ -131,7 +131,6 @@ public sealed class WheaEventLogReader : IWheaErrorSource
         {
             // 读不到必须与"读到 0 条"区分：前者返回 Available=false，界面显示"未读取"。
             var reason = $"{ex.GetType().Name}: {ex.Message}";
-            AppLog.Write($"[WHEA] 事件日志读取失败（{reason}）");
 
             LastEventIds = [];
             return WheaErrorCounts.Unavailable(reason);
@@ -200,9 +199,5 @@ public sealed class WheaEventLogReader : IWheaErrorSource
         _lastLoggedCounts = (counts.Corrected, counts.Fatal);
 
         var idText = ids.Count == 0 ? "无" : string.Join(",", ids.Distinct().OrderBy(i => i));
-        AppLog.Write(
-            $"[WHEA] 读取成功：已纠正={counts.Corrected} 未纠正={counts.Fatal} "
-            + $"处理器相关={(counts.CpuRelated >= 0 ? counts.CpuRelated.ToString() : "未判定")} "
-            + $"事件ID=[{idText}]（免提权即可读）");
     }
 }

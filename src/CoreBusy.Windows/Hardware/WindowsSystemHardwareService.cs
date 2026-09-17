@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Management;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
+using CoreBusy.Core.Energy;
 using CoreBusy.Core.Interfaces;
 using CoreBusy.Core.Models;
 using CoreBusy.Windows.Topology;
@@ -30,6 +31,12 @@ using Microsoft.Win32;
 /// 卷口径可用空间与磁盘块数进悬浮详情。
 /// </para>
 /// <para>
+/// v1.20.1 增补「型号信息」三项，供整机功耗的逐部件估算使用：内存模组的根数/单根容量/代际
+/// （<c>Win32_PhysicalMemory</c> 的 SMBIOS 类型）、各盘的介质类型（<c>MSFT_PhysicalDisk</c>
+/// 的 BusType/MediaType）、主卡是否独显（与状态栏选卡共用同一判别）。
+/// 三项都在构造时各读一次：它们都是**不会热变化**的静态属性，每帧去查 WMI 只是白花开销。
+/// </para>
+/// <para>
 /// 缓存策略：显卡是慢变量，构造时取一次；内存量每帧重读、磁盘按
 /// <see cref="DriveRefreshSeconds"/> 节流重读。
 /// </para>
@@ -49,6 +56,13 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
 
     private readonly string _gpuName;
     private readonly double? _gpuMemoryGb;
+    private readonly bool _gpuDiscrete;
+
+    /// <summary>物理内存模组布局（v1.20.1）。构造时读一次：内存不会热插拔，不必每帧查 WMI。</summary>
+    private readonly MemoryModuleLayout _memoryModules;
+
+    /// <summary>各物理固定盘的介质类型（v1.20.1）。构造时读一次：介质类型不会变。</summary>
+    private readonly IReadOnlyList<StorageMediaKind> _storageKinds;
 
     private int _driveCount;
     private double _driveTotalGb;
@@ -58,13 +72,10 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
 
     public WindowsSystemHardwareService()
     {
-        (_gpuName, _gpuMemoryGb) = ProbeGpu();
+        (_gpuName, _gpuMemoryGb, _gpuDiscrete) = ProbeGpu();
+        _memoryModules = ProbeMemoryModules();
+        _storageKinds = ProbeStorageKinds();
         RefreshDrive();
-
-        TopologyLog.Write(
-            $"[SYSINFO] gpu='{_gpuName}' vram={Fmt(_gpuMemoryGb)} "
-            + $"disks={_driveCount} total={_driveTotalGb:0.#}GB "
-            + $"volumeUsed={_driveVolumeUsedPercent:0.#}% volumeFree={_driveVolumeFreeGb:0.#}GB");
     }
 
     /// <inheritdoc />
@@ -86,7 +97,217 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
             _driveCount,
             _driveTotalGb,
             _driveVolumeFreeGb,
-            _driveVolumeUsedPercent);
+            _driveVolumeUsedPercent)
+        {
+            MemoryModuleCount = _memoryModules.Count,
+            MemoryModuleCapacityGb = _memoryModules.CapacityGb,
+            MemoryGeneration = _memoryModules.Generation,
+            StorageKinds = _storageKinds,
+            GpuIsDiscrete = _gpuDiscrete,
+        };
+    }
+
+    // ---------------------------------------------------------------- 功耗模型所需的型号信息
+
+    /// <summary>
+    /// 物理内存模组布局（根数 / 单根容量 / 代际）。
+    /// <para>
+    /// 走 WMI <c>Win32_PhysicalMemory</c>：其中的 <c>SMBIOSMemoryType</c> 是 SMBIOS 7.18.2 的
+    /// 内存类型枚举（26 = DDR4、34 = DDR5、30 = LPDDR4、35 = LPDDR5），比旧字段
+    /// <c>MemoryType</c> 可靠（后者在 Win10 以后常为 0，故仅作兜底）。
+    /// </para>
+    /// <para>
+    /// 读不到时返回"未知"而不是猜一个：整机功耗模型对未知代际按 DDR4 系数处理，
+    /// 影响的是 1.0/1.35 这类倍率，不会把"读不到"变成"读到了"。
+    /// </para>
+    /// </summary>
+    private static MemoryModuleLayout ProbeMemoryModules()
+    {
+        try
+        {
+            var count = 0;
+            var capacityBytes = 0L;
+            var generation = MemoryGeneration.Unknown;
+
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT Capacity, SMBIOSMemoryType, MemoryType FROM Win32_PhysicalMemory");
+
+            foreach (var item in searcher.Get())
+            {
+                using var module = (ManagementObject)item;
+
+                var bytes = ToNullableUInt64(module["Capacity"]) ?? 0;
+                if (bytes == 0)
+                    continue;
+
+                count++;
+                capacityBytes = Math.Max(capacityBytes, (long)bytes);
+
+                var kind = ClassifyMemory((int)(ToNullableUInt64(module["SMBIOSMemoryType"]) ?? 0));
+                if (kind == MemoryGeneration.Unknown)
+                    kind = ClassifyMemory((int)(ToNullableUInt64(module["MemoryType"]) ?? 0));
+
+                if (kind != MemoryGeneration.Unknown)
+                    generation = kind;
+            }
+
+            return count == 0
+                ? MemoryModuleLayout.Unknown
+                : new MemoryModuleLayout(count, capacityBytes / BytesPerGb, generation);
+        }
+        catch
+        {
+            return MemoryModuleLayout.Unknown;
+        }
+    }
+
+    /// <summary>
+    /// SMBIOS Memory Device Type（7.18.2）→ 代际。**只映射能确定的值**：
+    /// DDR2 及更早（18 等）与 DMI/SDRAM 一类一律返回 Unknown，交给模型按 DDR4 处理 ——
+    /// 给十几年前的机器编一个代际系数，收益远小于"我并不知道"这个事实的价值。
+    /// </summary>
+    private static MemoryGeneration ClassifyMemory(int smbiosType) => smbiosType switch
+    {
+        24 => MemoryGeneration.Ddr3,
+        26 => MemoryGeneration.Ddr4,
+        34 => MemoryGeneration.Ddr5,
+        29 => MemoryGeneration.LpDdr4, // LPDDR3 归入 LPDDR4 档（同为板载低压，系数接近）
+        30 => MemoryGeneration.LpDdr4,
+        35 => MemoryGeneration.LpDdr5,
+        _ => MemoryGeneration.Unknown,
+    };
+
+    /// <summary>内存模组布局（根数 / 单根容量 GB / 代际）。未知用 <see cref="Unknown"/> 表达。</summary>
+    private readonly record struct MemoryModuleLayout(int Count, double CapacityGb, MemoryGeneration Generation)
+    {
+        public static MemoryModuleLayout Unknown { get; } = new(0, 0, MemoryGeneration.Unknown);
+    }
+
+    /// <summary>
+    /// 各物理盘的介质类型。两条来源按可靠性排序：
+    /// <list type="number">
+    ///   <item><c>MSFT_PhysicalDisk</c>（<c>root\Microsoft\Windows\Storage</c>，与任务管理器同源）：
+    ///     <c>BusType</c> 17 = NVMe、<c>MediaType</c> 3 = HDD / 4 = SSD；</item>
+    ///   <item>WMI <c>Win32_DiskDrive.Model</c> 的型号串关键字（"NVMe"/"SSD"）。
+    ///     型号串不含关键字时返回 Unknown —— 不根据容量/转速瞎猜。</item>
+    /// </list>
+    /// <para>
+    /// <b>回退门槛看的是"有没有判别成功"，不是"有没有条目"</b>（v1.21.0 修）：
+    /// 原实现写的是 <c>kinds.Count > 0</c> 就直接返回，于是"字段读到了但全是 Unknown"会
+    /// 彻底挡住型号串回退 —— 本机实测正卡在这里（UInt16 字段读取失败 → 全 Unknown → 回退不执行）。
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<StorageMediaKind> ProbeStorageKinds()
+    {
+        var kinds = new List<StorageMediaKind>();
+
+        try
+        {
+            var scope = new ManagementScope(@"\\.\root\Microsoft\Windows\Storage");
+            using var searcher = new ManagementObjectSearcher(
+                scope, new ObjectQuery("SELECT MediaType, BusType, DeviceId FROM MSFT_PhysicalDisk"));
+
+            var entries = new List<(ulong Order, StorageMediaKind Kind)>();
+            foreach (var item in searcher.Get())
+            {
+                using var disk = (ManagementObject)item;
+                var media = (int)(ToNullableUInt64(disk["MediaType"]) ?? 0);
+                var bus = (int)(ToNullableUInt64(disk["BusType"]) ?? 0);
+
+                // 按 DeviceId 排序，使本列表与 Win32_DiskDrive 的 Index 顺序对齐 ——
+                // 下面按位置合并两条来源的前提就是这个。
+                entries.Add((ToNullableUInt64(disk["DeviceId"]) ?? 0, ClassifyPhysicalDisk(media, bus)));
+            }
+
+            entries.Sort((left, right) => left.Order.CompareTo(right.Order));
+            kinds.AddRange(entries.Select(entry => entry.Kind));
+        }
+        catch
+        {
+            // 该命名空间不可用（精简版系统/权限受限）→ 退回型号串判断。
+        }
+
+        if (kinds.Count > 0 && kinds.All(kind => kind != StorageMediaKind.Unknown))
+            return kinds;
+
+        var byModel = ProbeStorageKindsByModel();
+        if (byModel.Count == 0)
+            return kinds;
+
+        // 数量对不上（某一路少枚举了盘）时无法逐个对齐，整体改用型号串结果：
+        // 两路都覆盖不到的那块盘本来就只能按未知档算，混着两份不可对齐的清单更糟。
+        if (kinds.Count != byModel.Count)
+            return byModel;
+
+        // 逐块合并：MSFT 判出来的保留（更权威），只是它读不出来的那块用型号串补。
+        for (var i = 0; i < kinds.Count; i++)
+        {
+            if (kinds[i] == StorageMediaKind.Unknown)
+                kinds[i] = byModel[i];
+        }
+
+        return kinds;
+    }
+
+    /// <summary>型号串口径的介质判别（<c>Win32_DiskDrive</c>，按 <c>Index</c> 升序）。</summary>
+    private static IReadOnlyList<StorageMediaKind> ProbeStorageKindsByModel()
+    {
+        var kinds = new List<StorageMediaKind>();
+
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT Model, MediaType, Index FROM Win32_DiskDrive");
+
+            var entries = new List<(ulong Order, StorageMediaKind Kind)>();
+            foreach (var item in searcher.Get())
+            {
+                using var disk = (ManagementObject)item;
+                var media = disk["MediaType"] as string ?? string.Empty;
+                if (!media.StartsWith("Fixed", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                entries.Add((ToNullableUInt64(disk["Index"]) ?? 0, ClassifyDriveModel(disk["Model"] as string)));
+            }
+
+            entries.Sort((left, right) => left.Order.CompareTo(right.Order));
+            kinds.AddRange(entries.Select(entry => entry.Kind));
+        }
+        catch
+        {
+            kinds.Clear();
+        }
+
+        return kinds;
+    }
+
+    /// <summary>MSFT_PhysicalDisk 的 (MediaType, BusType) → 介质类型。</summary>
+    private static StorageMediaKind ClassifyPhysicalDisk(int mediaType, int busType)
+    {
+        if (busType == 17)
+            return StorageMediaKind.Nvme;
+
+        return mediaType switch
+        {
+            3 => StorageMediaKind.Hdd,
+            4 => StorageMediaKind.SataSsd,
+            _ => StorageMediaKind.Unknown,
+        };
+    }
+
+    /// <summary>硬盘型号串 → 介质类型（只认明确关键字，认不出就是 Unknown）。</summary>
+    private static StorageMediaKind ClassifyDriveModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return StorageMediaKind.Unknown;
+
+        if (model.Contains("NVMe", StringComparison.OrdinalIgnoreCase))
+            return StorageMediaKind.Nvme;
+
+        if (model.Contains("SSD", StringComparison.OrdinalIgnoreCase))
+            return StorageMediaKind.SataSsd;
+
+        return StorageMediaKind.Unknown;
     }
 
     // ---------------------------------------------------------------- 物理内存
@@ -140,7 +361,7 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
     /// （状态栏只有一个显卡位，用户关心的是独显）。显存只采信「这块卡自己」的读数，
     /// 三级回退见类注释。
     /// </summary>
-    private static (string Name, double? MemoryGb) ProbeGpu()
+    private static (string Name, double? MemoryGb, bool Discrete) ProbeGpu()
     {
         try
         {
@@ -166,18 +387,18 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
             }
 
             if (candidates.Count == 0)
-                return (string.Empty, null);
+                return (string.Empty, null, false);
 
             var best = candidates
                 .OrderByDescending(c => c.Discrete)
                 .ThenByDescending(c => c.MemoryGb ?? 0)
                 .ThenBy(c => c.Order)
                 .First();
-            return (best.Name, best.MemoryGb);
+            return (best.Name, best.MemoryGb, best.Discrete);
         }
         catch
         {
-            return (string.Empty, null);
+            return (string.Empty, null, false);
         }
     }
 
@@ -272,25 +493,51 @@ public sealed class WindowsSystemHardwareService : ISystemHardwareService
         return match.Success ? match.Value.ToUpperInvariant() : string.Empty;
     }
 
-    /// <summary>是否独显产品线（核显不匹配：UHD / HD / Iris / 无 RX 的 Radeon / 680M 这类）。</summary>
-    private static bool IsDiscreteGpu(string shortName)
-    {
-        foreach (var keyword in new[] { "GeForce", "RTX", "GTX", "Quadro", "RX ", "Arc " })
-        {
-            if (shortName.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
-    }
+    /// <summary>
+    /// 是否独显产品线（核显不匹配：UHD / HD / Iris / 无 RX 的 Radeon / 680M 这类）。
+    /// <para>
+    /// v1.20.1 起改为转调 <see cref="GpuRatedPower.LooksDiscrete"/>：同一判别必须同时服务两处
+    /// ——状态栏选卡排序（这里）与整机功耗模型（"独显要单独计、核显已含在封装内"），
+    /// 各写一套关键字迟早会分叉，而分叉的后果是凭空多算/少算一二百瓦。
+    /// </para>
+    /// </summary>
+    private static bool IsDiscreteGpu(string shortName) => GpuRatedPower.LooksDiscrete(shortName);
 
     /// <summary>WMI 属性装箱值 → ulong（AdapterRAM/Size 等均为无符号整型属性）。</summary>
-    private static ulong? ToNullableUInt64(object? value) => value switch
+    /// <summary>
+    /// WMI 数值字段 → <c>ulong?</c>。**必须覆盖全部整型宽度**。
+    /// <para>
+    /// WMI 的 <c>UInt16</c> 字段在 .NET 侧是 <c>ushort</c>：只写 <c>uint</c>/<c>ulong</c> 两个分支，
+    /// 它就会一律返回 null。v1.21.0 实测两处后果：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>MSFT_PhysicalDisk.BusType</c> = 17 (UInt16)、<c>MediaType</c> = 4 (UInt16)
+    /// 双双读成 0 → 单块 NVMe 被判成「介质未知」，硬盘功耗按最保守的未知档算；
+    /// 又因下面的回退门槛看的是条目数而非"是否判别成功"，型号串回退也没能兜住。</item>
+    /// <item><c>Win32_PhysicalMemory.SMBIOSMemoryType</c> (UInt16) 同样读不到，
+    /// 只因另有一路 <c>MemoryType</c> (UInt32) 兜底才没暴露 —— 属于同一处漏写的另一个受害者。</item>
+    /// </list>
+    /// <para>约定保持不变：0 与非整型（含 null）返回 null。</para>
+    /// </summary>
+    private static ulong? ToNullableUInt64(object? value)
     {
-        uint asUint when asUint > 0 => asUint,
-        ulong asUlong when asUlong > 0 => asUlong,
-        _ => null,
-    };
+        var raw = value switch
+        {
+            byte asByte => asByte,
+            // 有符号的小整型要显式转 int：Math.Max(0, asSbyte) 里的字面量 0 是 int，
+            // 会同时匹配 Math.Max(int,int) 与 Math.Max(sbyte,sbyte) 而报 CS0121。
+            sbyte asSbyte => (ulong)Math.Max(0, (int)asSbyte),
+            ushort asUshort => asUshort,
+            short asShort => (ulong)Math.Max(0, (int)asShort),
+            uint asUint => asUint,
+            int asInt => (ulong)Math.Max(0, asInt),
+            ulong asUlong => asUlong,
+            long asLong => (ulong)Math.Max(0, asLong),
+            _ => 0UL,
+        };
+
+        return raw > 0 ? raw : null;
+    }
 
     /// <summary>qwMemorySize 可能是 REG_QWORD（long）或 REG_BINARY（8 字节小端）。</summary>
     private static long? ReadQword(object? value) => value switch

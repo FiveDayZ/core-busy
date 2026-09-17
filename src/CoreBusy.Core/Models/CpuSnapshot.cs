@@ -51,4 +51,25 @@ public sealed record CpuSnapshot
 
     /// <summary>逐块盘的盘温（v1.16.2）。空列表 = 读不到任何盘温。</summary>
     public IReadOnlyList<DriveTemperatureReading> DriveTemperatures { get; init; } = [];
+
+    /// <summary>
+    /// **全部独显**的实测功率之和（W，v1.20.1）。NaN = 没有独显功率传感器
+    /// （核显、或驱动缺失），**不是 0 W** —— 0 W 是独显下电时的合法读数（Optimus 笔记本）。
+    /// </summary>
+    public double DiscreteGpuPowerW { get; init; } = double.NaN;
+
+    /// <summary>
+    /// 被判为**独显**的显卡名（v1.20.1）。空 = 未判别出独显（核显，或型号判别不出）。
+    /// 整机功耗模型据此决定显卡项是"单独计"还是"已含在 CPU 封装内"。
+    /// </summary>
+    public IReadOnlyList<string> DiscreteGpuNames { get; init; } = [];
+
+    /// <summary>正在转动的风扇数量（v1.20.1）。整机功耗模型按个数计风扇功耗。</summary>
+    public int ActiveFanCount { get; init; }
+
+    /// <summary>最忙那块盘的吞吐（MB/s，v1.20.1）。NaN = 读不到（模型按空闲计）。</summary>
+    public double StorageThroughputMbps { get; init; } = double.NaN;
+
+    /// <summary>最忙那块盘的忙率（%，v1.20.1）。NaN = 读不到。</summary>
+    public double StorageBusyPercent { get; init; } = double.NaN;
 }

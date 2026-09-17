@@ -32,6 +32,13 @@ using CoreBusy.App.Infrastructure;
 /// </item>
 /// </list>
 /// <para>
+/// <b>v1.21.0 换口径：账本记的量由「CPU 封装功耗」改为「整机估算功率」</b>
+/// （逐部件模型，与状态栏右路同源）。定档算法本身不受影响 —— 它比的是当日的相对倍数，
+/// 全体同乘一个系数不改变档位；改的只是"分子分母是什么量"，所以悬浮说明里一律标注「整机」。
+/// 旧口径的历史不参与计算：两种口径相差约两倍，混在一个月里会让旧日被系统性判成"明显偏少"，
+/// 还会把参照中位数一起拖低（见 <c>EnergyHistoryStore</c> 的口径标识与归档逻辑）。
+/// </para>
+/// <para>
 /// 另外新增一道<b>观测覆盖门槛</b>：观测不足 <see cref="MinRankableObservedSeconds"/> 的日子
 /// 不做多/少判断 —— 它是「没看够」，不是「用得少」，把两者画成同一个色阶是误导。
 /// 这类日子与「有记录但本月参照不足」共用同一个不定档外观，具体原因写在悬浮说明里。
@@ -201,14 +208,16 @@ public sealed class PowerCalendarDayVm : ObservableObject
         var label = $"{date.Month}月{date.Day}日";
 
         if (joules <= 0 || seconds <= 0)
-            return $"{label} · 无记录\n当天本程序未记录到功耗读数";
+            return $"{label} · 无记录\n当天本程序未记录到整机功耗读数";
 
         var window = TimeSpan.FromSeconds(seconds);
         var average = joules / seconds;
 
-        var text = $"{label} · 累计 {CumulativeEnergyTracker.FormatEnergy(joules)}\n"
+        // 口径必须写在每一格里（「整机」「估算」）：日历的数值只有相对含义，
+        // 用户想知道"这一天到底多少瓦"时，唯一能看到的就是这段悬浮说明。
+        var text = $"{label} · 累计整机（估算）{CumulativeEnergyTracker.FormatEnergy(joules)}\n"
             + $"观测 {(int)window.TotalHours}:{window.Minutes:00}:{window.Seconds:00}"
-            + $" · 平均 {average:0.0} W\n"
+            + $" · 平均整机 {average:0.0} W\n"
             + $"全天等效 {CumulativeEnergyTracker.FormatEnergy(average * 86400.0)}"
             + "（按观测期外推，仅为可比性）";
 
@@ -227,7 +236,7 @@ public sealed class PowerCalendarDayVm : ObservableObject
 
         var ratio = average / referenceWatt;
         return text
-            + $"\n多/少按平均功率定档：为常见日（{referenceWatt:0.0} W）的 {ratio:0.00}×"
+            + $"\n多/少按平均整机功率定档：为常见日（{referenceWatt:0.0} W）的 {ratio:0.00}×"
             + "，与观测时长无关";
     }
 }

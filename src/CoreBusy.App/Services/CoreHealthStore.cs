@@ -85,7 +85,6 @@ public static class CoreHealthStore
                 return result;
 
             if (file.Version != CurrentVersion)
-                AppLog.Write($"[HEALTH] 基线文件版本 {file.Version} ≠ {CurrentVersion}，按当前口径尽力读取");
 
             foreach (var pair in file.Cores)
             {
@@ -96,7 +95,6 @@ public static class CoreHealthStore
                 // 它虽不参与评分，但留着会被界面渲染成"历史站位 -/当量 NaN"，白占一行又误导。
                 if (double.IsNaN(pair.Value.RatioToPeer) || pair.Value.RatioToPeer <= 0)
                 {
-                    AppLog.Write($"[HEALTH] 基线 {pair.Key} 站位比值无效（{pair.Value.RatioToPeer}），丢弃");
                     continue;
                 }
 
@@ -105,9 +103,8 @@ public static class CoreHealthStore
 
             return result;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[HEALTH] 基线读取失败：{ex.Message}");
             return result;
         }
     }
@@ -125,9 +122,8 @@ public static class CoreHealthStore
 
             File.WriteAllText(FilePath, JsonSerializer.Serialize(file, JsonOptions));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[HEALTH] 基线保存失败：{ex.Message}");
         }
     }
 }

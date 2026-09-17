@@ -109,9 +109,8 @@ public static class CoreVoltageStore
                     result[pair.Key] = pair.Value;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[HEALTH] 电压档案读取失败：{ex.Message}");
         }
 
         return result;
@@ -172,9 +171,8 @@ public static class CoreVoltageStore
 
             File.WriteAllText(FilePath, JsonSerializer.Serialize(file, JsonOptions));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[HEALTH] 电压档案保存失败：{ex.Message}");
         }
     }
 }

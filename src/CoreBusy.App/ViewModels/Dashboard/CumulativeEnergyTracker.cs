@@ -22,17 +22,36 @@ namespace CoreBusy.App.ViewModels.Dashboard;
 ///   <item>能耗可以在 Tooltip 里报告「覆盖率」，让用户知道数字背后的观测窗口有多完整。</item>
 /// </list>
 /// <para>
-/// 读数还按 <see cref="MaxPlausibleWatt"/> 做了合理性筛选：某些平台偶发返回单位错误
+/// 读数还按 <see cref="DefaultMaxPlausibleWatt"/> 做了合理性筛选：某些平台偶发返回单位错误
 /// 的离谱读数，这类异常值若参与积分会永久污染累计量，故视为无效样本跳过。
+/// 上限可由构造参数覆盖（整机能耗的估算值量级更高，见 <see cref="_maxPlausibleWatt"/>）。
 /// </para>
 /// </summary>
 public sealed class CumulativeEnergyTracker
 {
     /// <summary>
-    /// 功耗读数的合理性上限（W）。消费级/工作站 CPU 封装功耗峰值一般在 300W 量级，
+    /// 功耗读数的合理性上限默认值（W）。消费级/工作站 CPU 封装功耗峰值一般在 300W 量级，
     /// 超出此值几乎必然是单位错误或传感器异常读数，参与积分会污染累计量。
     /// </summary>
-    private const double MaxPlausibleWatt = 1000.0;
+    public const double DefaultMaxPlausibleWatt = 1000.0;
+
+    /// <summary>
+    /// 本实例的合理性上限（W）。做成实例字段而非常量，是因为 v1.20.0 起整机能耗也走本类积分
+    /// （估算值 = k×封装 + b，量级必然高于封装本身，见 <see cref="CoreBusy.Core.Energy.SystemPowerEstimator"/>）。
+    /// 若沿用 CPU 的 1000 W 闸，一份合法配置在满载时可能算出超过闸门的整机功率，
+    /// 于是被静默丢样本 —— 表现为「整机能耗覆盖率莫名低于 CPU」，只看界面查不出来。
+    /// </summary>
+    private readonly double _maxPlausibleWatt;
+
+    /// <param name="maxPlausibleWatt">
+    /// 合理性上限（W）。非有限或非正时回落 <see cref="DefaultMaxPlausibleWatt"/>。
+    /// </param>
+    public CumulativeEnergyTracker(double maxPlausibleWatt = DefaultMaxPlausibleWatt)
+    {
+        _maxPlausibleWatt = double.IsFinite(maxPlausibleWatt) && maxPlausibleWatt > 0
+            ? maxPlausibleWatt
+            : DefaultMaxPlausibleWatt;
+    }
 
     /// <summary>累计能耗（焦耳）。1 Wh = 3600 J。</summary>
     public double Joules { get; private set; }
@@ -65,7 +84,7 @@ public sealed class CumulativeEnergyTracker
         var valid = deltaSeconds > 0
             && double.IsFinite(powerWatt)
             && powerWatt > 0
-            && powerWatt <= MaxPlausibleWatt;
+            && powerWatt <= _maxPlausibleWatt;
 
         HasLiveSample = valid;
         if (!valid)

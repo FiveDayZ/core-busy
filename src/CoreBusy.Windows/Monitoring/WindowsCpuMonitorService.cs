@@ -50,6 +50,14 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     private double? _gpuUsage;
     private double? _driveTemp;
     private IReadOnlyList<DriveTemperatureReading> _driveTemps = [];
+
+    // 整机功耗估算所需的逐部件输入（v1.20.1）。与上面几项一样：读不到就是 null/NaN，
+    // 绝不用 0 冒充（0 W 在独显那一路是**合法读数**，两者必须能分开）。
+    private double? _discreteGpuPower;
+    private IReadOnlyList<string> _discreteGpuNames = [];
+    private int _activeFanCount;
+    private double? _storageThroughputMbps;
+    private double? _storageBusyPercent;
     private double _peakTemp = double.NaN;
     private DateTime _peakTempTime = DateTime.Now;
     private double[] _coreUsage = [];
@@ -214,6 +222,11 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                 GpuTemperatureC = _gpuTemp ?? double.NaN,
                 GpuUtilizationPercent = _gpuUsage ?? double.NaN,
                 DriveTemperatureC = _driveTemp ?? double.NaN,
+                DiscreteGpuPowerW = _discreteGpuPower ?? double.NaN,
+                DiscreteGpuNames = _discreteGpuNames,
+                ActiveFanCount = _activeFanCount,
+                StorageThroughputMbps = _storageThroughputMbps ?? double.NaN,
+                StorageBusyPercent = _storageBusyPercent ?? double.NaN,
                 TopProcesses = _topProcesses,
             };
         }
@@ -314,35 +327,25 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
         {
             probe = _sensors.ProbeIntelBaseClock();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            TopologyLog.Write(
-                $"[TOPOLOGY] base clock msr probe threw ({ex.GetType().Name}: {ex.Message}), keep current");
             return;
         }
 
         if (!probe.Available)
         {
             // 不再把"失败原因未知"糊成 not elevated or unsupported：Note 由传感器层给出可审计原因。
-            TopologyLog.Write($"[TOPOLOGY] base clock msr unavailable: {probe.Note}, keep current");
             return;
         }
 
-        TopologyLog.Write(
-            $"[TOPOLOGY] base clock msr evidence: base={probe.BaseFrequencyMhz:0} MHz ({probe.Note}) "
-            + $"PL1={(double.IsNaN(probe.Pl1W) ? "-" : probe.Pl1W.ToString("0.0") + " W")} "
-            + $"PL2={(double.IsNaN(probe.Pl2W) ? "-" : probe.Pl2W.ToString("0.0") + " W")}");
 
         var mhz = probe.BaseFrequencyMhz;
         var current = _baseClockMhz;
         if (current > 0 && Math.Abs(current - mhz) <= mhz * 0.05)
         {
-            TopologyLog.Write($"[TOPOLOGY] base clock msr: {mhz:0} MHz matches current, keep");
             return;
         }
 
-        TopologyLog.Write(
-            $"[TOPOLOGY] base clock msr: current={(current > 0 ? current.ToString("0") : "-")} MHz -> {mhz:0} MHz (msr.0xCE)");
         _baseClockMhz = mhz;
         _info = _info with { BaseClockGHz = mhz / 1000.0 };
     }
@@ -504,6 +507,11 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
             _gpuUsage = sensorsOn ? sensor.GpuUtilizationPercent : null;
             _driveTemp = sensorsOn ? sensor.DriveTemperatureC : null;
             _driveTemps = sensorsOn ? sensor.DriveTemperatures : [];
+            _discreteGpuPower = sensorsOn ? sensor.DiscreteGpuPowerW : null;
+            _discreteGpuNames = sensorsOn ? sensor.DiscreteGpuNames : [];
+            _activeFanCount = sensorsOn ? sensor.ActiveFanCount : 0;
+            _storageThroughputMbps = sensorsOn ? sensor.StorageThroughputMbps : null;
+            _storageBusyPercent = sensorsOn ? sensor.StorageBusyPercent : null;
 
             // 进程排行（首次调用无增量基准，返回空列表）。
             try
@@ -550,12 +558,6 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
         _frequencySourceLogged = true;
 
         var sources = string.Join(",", _coreFreqSource.Select(DescribeSource));
-        TopologyLog.Write(
-            $"[FREQ] 逐核频率来源：显示列={sources}（LHM 逐核 P-state/计数器）；"
-            + $"有效频率={(effectiveCount > 0 ? $"可用 {effectiveCount}/{_cores.Count} 核" : "不可用")}；"
-            + $"逐核电压={(sensor.CoreVoltageV.Count > 0 ? $"可用 {sensor.CoreVoltageV.Count}/{_cores.Count} 核" : "不可用")}；"
-            + $"最高加速档={(_maxCoreClockMhz > 0 ? $"{_maxCoreClockMhz:0} MHz" : "-")}"
-            + "（硬件活跃度的分母，取会话内观测到的最高 P-state）");
     }
 
     private static string DescribeSource(CoreFrequencySource source) => source switch

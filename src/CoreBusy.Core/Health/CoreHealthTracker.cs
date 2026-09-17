@@ -410,17 +410,6 @@ public sealed class CoreHealthTracker
     private const double WeightThermal = 0.25;
     private const double WeightStability = 0.15;
 
-    /// <summary>
-    /// 全表心跳日志的间隔（秒）。
-    /// <para>
-    /// 评级只在**跨档**时写一行，这样不刷屏，但代价是"分数到底稳不稳"无法取证 ——
-    /// v1.17.0 首轮验证就是吃了这个亏：只看到 C2 的几次跨档，看不到其余七核在同一个窗口里
-    /// 参照与峰值怎么漂，于是无法判断那是芯片问题还是参照不稳。
-    /// 本表每轮把**所有**核心的完整读数落一行（8 核约 200 字节），足以回答"漂移/稳定"。
-    /// </para>
-    /// </summary>
-    private const int HeartbeatSeconds = 120;
-
     private sealed class CoreWindow
     {
         public readonly double[] Usage = new double[WindowSize];
@@ -456,9 +445,6 @@ public sealed class CoreHealthTracker
 
         /// <summary>本核最近一次的硬件活跃度（%）；读不到为 NaN。</summary>
         public double LastActivityPercent = double.NaN;
-
-        /// <summary>上次写入日志时的评级，用于只在**跨档**时落一行，避免刷屏。</summary>
-        public CoreHealthGrade LastLoggedGrade = CoreHealthGrade.Unknown;
 
         /// <summary>当前**已确认**的展示评级（带滞回，v1.19.1）。Unknown = 尚无证据。</summary>
         public CoreHealthGrade StableGrade = CoreHealthGrade.Unknown;
@@ -499,9 +485,6 @@ public sealed class CoreHealthTracker
     private int _wheaCorrected;
     private int _wheaFatal;
     private bool _wheaAvailable;
-    private bool _inventoryLogged;
-    private bool _spacingNoticeLogged;
-    private DateTime _lastHeartbeatUtc = DateTime.MinValue;
 
     /// <param name="baselines">
     /// 历史基线表（可为空）。传入的字典会被**就地更新** —— 这样宿主不必在每次采样后
@@ -579,14 +562,6 @@ public sealed class CoreHealthTracker
                 && (nowUtc - window.LastAcceptedUtc).TotalSeconds < MinSampleSpacingSeconds)
             {
                 window.TooFastFrames++;
-                if (!_spacingNoticeLogged)
-                {
-                    _spacingNoticeLogged = true;
-                    HealthLog.Write(
-                        $"[HEALTH] 采样周期短于 {MinSampleSpacingSeconds:0.0} 秒：健康统计按该节拍取帧"
-                        + "（界面刷新不受影响）。判定口径不随用户的显示偏好漂移。");
-                }
-
                 continue;
             }
 
@@ -639,7 +614,6 @@ public sealed class CoreHealthTracker
         foreach (var id in stale)
         {
             _windows.Remove(id);
-            HealthLog.Write($"[HEALTH] 核心 {id} 已不在当前拓扑中，采样窗口丢弃");
         }
     }
 
@@ -785,87 +759,11 @@ public sealed class CoreHealthTracker
             };
 
             result.Add(entry);
-            LogGradeTransition(entry, window);
             UpdateBaseline(id, stat, peerReference);
         }
 
-        LogInventoryOnce(result.Count);
-        LogHeartbeatIfDue(result);
         return result;
     }
-
-    /// <summary>
-    /// 全表心跳：每隔 <see cref="HeartbeatSeconds"/> 秒把所有核心的完整读数落一行。
-    /// <para>
-    /// 列的含义：<c>总分(峰/参同/站/样/活)[口径]</c>。参照恒为同封装中位数（标 <c>同</c>），
-    /// 站位是该核历史最好站位比值（仅展示、不计分），活=硬件活跃度，样=证据帧数，
-    /// 方括号里是频率口径（<c>有效</c> / <c>档位</c>）。未判分的核额外带 <c>!</c> 与原因码。
-    /// 这条日志是判断"分数波动源于芯片还是源于同伴参照"的唯一依据。
-    /// </para>
-    /// <para>
-    /// v1.18.0 增补：把**未判分的原因**写进心跳。v1.17.1 排查"10 分钟没显示"时，
-    /// 心跳只写 `-(样0)`，无法区分"没负载"和"参照不成立"，只能靠人肉比对界面与代码。
-    /// </para>
-    /// </summary>
-    private void LogHeartbeatIfDue(IReadOnlyList<CoreHealthScore> scores)
-    {
-        if (scores.Count == 0)
-            return;
-
-        var now = DateTime.UtcNow;
-        if (_lastHeartbeatUtc != DateTime.MinValue
-            && (now - _lastHeartbeatUtc).TotalSeconds < HeartbeatSeconds)
-        {
-            return;
-        }
-
-        _lastHeartbeatUtc = now;
-
-        var parts = new List<string>(scores.Count + 1);
-        foreach (var s in scores)
-        {
-            // 站位（基/当量）一并带上：它是"这颗核相对同伴的位置"，人工判读时最有用的一列，
-            // 但它**不参与分数**（理由见 CoreHealthBaselineEntry）。
-            var standing = double.IsNaN(s.BaselineRatio)
-                ? "站-"
-                : $"站{s.BaselineRatio:0.000}";
-
-            var basis = s.FrequencyBasis == CoreFrequencySource.SensorEffective ? "有效" : "档位";
-
-            var line = $"{s.CoreId} {Fmt(s.Score)}(峰{Fmt(s.PeakGHz)}/参{Fmt(s.ReferenceGHz)}同"
-                       + $"/{standing}/样{s.HeavySamples}/活{Fmt(s.HardwareActivityPercent)})[{basis}]";
-
-            // 未判定时把原因直接写出来 —— 这一列的存在就是为了让"沉默的横杠"变成可读的结论。
-            if (s.UnscoredReason != CoreHealthUnscoredReason.None)
-                line += $"!{ReasonCode(s.UnscoredReason)}";
-
-            parts.Add(line);
-        }
-
-        parts.Insert(
-            0,
-            referenceValidTag(scores));
-
-        HealthLog.Write($"[HEALTH·表] {now.ToLocalTime():HH:mm:ss} " + string.Join("  ", parts));
-    }
-
-    /// <summary>心跳行的参照状态前缀：让"为什么全体都是 -"一眼可见。</summary>
-    private static string referenceValidTag(IReadOnlyList<CoreHealthScore> scores)
-    {
-        var first = scores[0];
-        return first.ReferenceValid
-            ? $"参照OK({first.EligibleCoreCount}/{first.TrackedCoreCount})"
-            : $"参照不足({first.EligibleCoreCount}/{first.TrackedCoreCount}，需{first.RequiredEligibleCores})";
-    }
-
-    /// <summary>未判定原因的短码（日志用，与枚举一一对应）。</summary>
-    private static string ReasonCode(CoreHealthUnscoredReason reason) => reason switch
-    {
-        CoreHealthUnscoredReason.NoFrequency => "无频率",
-        CoreHealthUnscoredReason.NotEnoughHeavyFrames => "样本不足",
-        CoreHealthUnscoredReason.PeerReferenceInvalid => "参照不足",
-        _ => "已判定",
-    };
 
     /// <summary>
     /// WHEA 惩罚（作用于总分，独立于分量）。
@@ -1077,52 +975,6 @@ public sealed class CoreHealthTracker
         return rawGrade;
     }
 
-    /// <summary>
-    /// 评级跨档时落一行日志 —— 只在边沿写，不逐帧刷屏。
-    /// <para>
-    /// v1.19.1 起比较的是**确认后的评级**（<see cref="CoreHealthScore.Grade"/>）而不是瞬时档位：
-    /// 日志要回答的是「用户看到的角标什么时候变了」。被滞回压住的瞬时越界不落日志 ——
-    /// 这正是它不该刷屏的证明；要看瞬时档位请用回放工具读
-    /// <see cref="CoreHealthScore.RawGrade"/>。
-    /// </para>
-    /// </summary>
-    private static void LogGradeTransition(CoreHealthScore score, CoreWindow window)
-    {
-        if (score.Grade == window.LastLoggedGrade)
-            return;
-
-        window.LastLoggedGrade = score.Grade;
-
-        if (score.Grade == CoreHealthGrade.Unknown)
-            return;
-
-        HealthLog.Write(
-            $"[HEALTH] {score.CoreId} 评级 {score.Grade}：总分={score.Score:0.0} "
-            + $"(达成={Fmt(score.ClockScore)} 热裕度={Fmt(score.ThermalScore)} 稳定={Fmt(score.StabilityScore)}) "
-            + $"峰值={Fmt(score.PeakGHz)}GHz 参照={Fmt(score.ReferenceGHz)}GHz(同封装) "
-            + $"站位={Fmt(score.BaselineRatio)} 满载样本={score.HeavySamples} 覆盖率={score.CoveragePercent:0}%");
-    }
-
-    private void LogInventoryOnce(int coreCount)
-    {
-        if (_inventoryLogged)
-            return;
-
-        _inventoryLogged = true;
-        HealthLog.Write(
-            $"[HEALTH] 评分器就绪：{coreCount} 核，窗口={WindowSize} 帧，"
-            + $"证据判据=OS使用率≥{HeavyLoadPercent:0}% 或 硬件活跃度≥{HeavyActivityPercent:0}%（取或），"
-            + $"最少证据帧={MinHeavySamples}（稳定性另需工作点样本≥{StabilityMinSamples}，"
-            + $"工作点=峰值×{StabilityWorkingPointRatio:0.00} 以上）；"
-            + $"参照需≥{RequiredEligibleCores(coreCount)} 核达标；"
-            + $"帧距下限={MinSampleSpacingSeconds:0.0}s；评级确认={GradeConfirmSeconds:0}s；"
-            + $"封装温度={Fmt(_packageTempC)}℃"
-            + $"（{(!double.IsNaN(_packageTempC) ? "可读" : "不可读，热裕度分量不参与")}）；"
-            + $"WHEA={( _wheaAvailable ? $"可读（纠正 {_wheaCorrected} / 致命 {_wheaFatal}）" : "不可读")}；"
-            + $"历史基线={_baselines.Count} 核");
-    }
-
-    private static string Fmt(double value) => double.IsNaN(value) ? "-" : value.ToString("0.00");
 
     /// <summary>单核的窗口统计量。</summary>
     private readonly struct CoreStats

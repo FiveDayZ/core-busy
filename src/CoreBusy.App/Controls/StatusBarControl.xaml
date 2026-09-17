@@ -103,7 +103,17 @@
                        Foreground="{DynamicResource CoreBusyTextPrimaryBrush}" VerticalAlignment="Center"
                        Typography.NumeralAlignment="Tabular" />
 
-            <!--  运行期累计能耗：数据源依赖硬件传感器，缺失时用弱色表示「已停止更新」  -->
+            <!--
+                运行期累计能耗（v1.20.0 起并排两项，中间用分割线分开）：
+                左 = CPU 封装能耗（传感器实测），右 = 整机能耗（逐部件估算，v1.20.1 起
+                为 CPU 实测 + 显卡/内存/硬盘/风扇/主板 逐项相加，各部件"能测就测、
+                测不到按型号估"）。
+                两路单位同量级、同样自动换档，若不区分就会互相冒充 —— 故左侧显式标 CPU、
+                右侧显式标「整机」，且整机数值自带「≈」前缀（标记由 VM 拼，不在这里补）。
+                数据源依赖硬件传感器，缺失时各自转弱色表示「已停止更新」。
+                悬浮提示逐项给出统计窗口与覆盖率，整机那路另给**逐部件构成**（每项标注
+                实测还是模型、用的什么额定值/系数）。
+            -->
             <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
                     Margin="10,0" VerticalAlignment="Center" />
 
@@ -111,7 +121,7 @@
                         ToolTip="{Binding EnergyHintText}" ToolTipService.ShowDuration="20000">
                 <Path Data="{StaticResource IconBolt}" Stretch="Uniform" Width="9" Height="11"
                       Fill="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
-                <TextBlock Text="能耗" FontSize="11" Margin="5,0,0,0"
+                <TextBlock Text="CPU" FontSize="11" Margin="5,0,0,0"
                            Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
                 <TextBlock Text="{Binding EnergyText}" FontSize="11" FontWeight="SemiBold" Margin="5,0,0,0"
                            VerticalAlignment="Center" Typography.NumeralAlignment="Tabular">
@@ -124,6 +134,30 @@
                                     冻结的历史值（或从未取到），而非仍在累积的实时数。
                                 -->
                                 <DataTrigger Binding="{Binding EnergyIsLive}" Value="False">
+                                    <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextWeakBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+
+            <!--  分割线：CPU 能耗 / 整机能耗的分界（两路口径不同，必须视觉上分开）  -->
+            <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
+                    Margin="8,0" VerticalAlignment="Center" />
+
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                        ToolTip="{Binding SystemEnergyHintText}" ToolTipService.ShowDuration="20000">
+                <TextBlock Text="整机" FontSize="11"
+                           Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding SystemEnergyText}" FontSize="11" FontWeight="SemiBold" Margin="5,0,0,0"
+                           VerticalAlignment="Center" Typography.NumeralAlignment="Tabular">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextSecondaryBrush}" />
+                            <Style.Triggers>
+                                <!--  同 CPU 那路：估算路也以「能否拿到封装读数」为实时性的唯一判据  -->
+                                <DataTrigger Binding="{Binding SystemEnergyIsLive}" Value="False">
                                     <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextWeakBrush}" />
                                 </DataTrigger>
                             </Style.Triggers>

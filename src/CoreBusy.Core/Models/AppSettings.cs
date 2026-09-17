@@ -1,3 +1,5 @@
+using CoreBusy.Core.Energy;
+
 namespace CoreBusy.Core.Models;
 
 /// <summary>
@@ -57,6 +59,41 @@ public sealed class AppSettings
 
     /// <summary>点击关闭（标题栏 X / Alt+F4）时最小化到托盘而不是退出。默认启用；托盘图标右键可退出。</summary>
     public bool CloseToTray { get; set; } = true;
+
+    // ── 整机功耗估算的逐部件可校准系数（v1.20.1）────────────────────────
+    //    为什么从 v1.20.0 的「一个斜率 k + 一个底数 b」改成分项：那一版整机口径是
+    //    「整机 ≈ k × CPU封装功耗 + b」，只有一个输入，于是"CPU 之外的一切"全被压进 k 与 b；
+    //    它在带独显的机器上会整体漏掉独显那一两百瓦（独显功耗不随 CPU 封装功耗变化），
+    //    且用户即使发现偏差也无法判断该修哪一项。现在改为逐部件（显卡 / 内存 / 硬盘 / 风扇 /
+    //    主板），每一项都有自己的系数，见 SystemPowerEstimator。
+    //    全部字段的越界处理与全线约定一致：**回落默认值，而不是截断**——截断会把"填错了"
+    //    伪装成"填了个极端值"。旧版 settings.json 里的 SystemPowerFactor /
+    //    SystemPowerBaseWatts 反序列化时被忽略（不报错），需按下面五项重新校准。
+
+    /// <summary>整机总量校准乘数（默认 1.0，合法 0.3–3.0）。有功率计的用户只调这一个。</summary>
+    public double SystemPowerCalibration { get; set; } = SystemPowerEstimator.DefaultCalibration;
+
+    /// <summary>主板/芯片组/网卡/USB 供电等固定开销（W，默认 10，合法 0–100）。</summary>
+    public double SystemPowerBoardWatts { get; set; } = SystemPowerEstimator.DefaultBoardWatts;
+
+    /// <summary>每个转动风扇的功耗（W，默认 2，合法 0–20）。</summary>
+    public double SystemPowerFanWatts { get; set; } = SystemPowerEstimator.DefaultFanWatts;
+
+    /// <summary>独显无功率传感器且型号不在表内时的整卡额定功率兜底（W，默认 150，合法 0–600）。</summary>
+    public double SystemPowerGpuFallbackWatts { get; set; } = SystemPowerEstimator.DefaultGpuFallbackWatts;
+
+    /// <summary>内存每 GB 的满载功耗系数（W/GB，默认 0.392 = Cloud Carbon Footprint 口径，合法 0–2）。</summary>
+    public double SystemPowerDramWattsPerGb { get; set; } = SystemPowerEstimator.DefaultDramWattsPerGb;
+
+    /// <summary>把扁平字段组装成功耗模型的设置记录（唯一的转换点，避免各处各拼一次）。</summary>
+    public SystemPowerSettings ToSystemPowerSettings() => new()
+    {
+        Calibration = SystemPowerCalibration,
+        BoardWatts = SystemPowerBoardWatts,
+        FanWatts = SystemPowerFanWatts,
+        GpuFallbackWatts = SystemPowerGpuFallbackWatts,
+        DramWattsPerGb = SystemPowerDramWattsPerGb,
+    };
 
     /// <summary>
     /// CPU 核心优化设置（v1.12.0）：进程亲和性/优先级规则、游戏模式联动、电源策略。

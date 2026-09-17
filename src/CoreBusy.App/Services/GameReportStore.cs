@@ -38,9 +38,8 @@ public static class GameReportStore
             File.WriteAllText(path, JsonSerializer.Serialize(report, JsonOptions));
             return path;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"game report save failed: {ex.Message}");
             return null;
         }
     }

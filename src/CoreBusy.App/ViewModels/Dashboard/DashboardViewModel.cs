@@ -9,6 +9,7 @@ using CoreBusy.App.Controls;
 using CoreBusy.App.Infrastructure;
 using CoreBusy.App.Services;
 using CoreBusy.App.Themes;
+using CoreBusy.Core.Energy;
 using CoreBusy.Core.Health;
 using CoreBusy.Core.Interfaces;
 using CoreBusy.Core.Models;
@@ -122,6 +123,26 @@ public sealed class DashboardViewModel : ObservableObject
     private readonly CumulativeEnergyTracker _energy = new();
 
     /// <summary>
+    /// 整机能耗积分器（v1.20.0）。与 <see cref="_energy"/> 共用同一份 Δt 与**同一份有效性判定**
+    /// （封装功耗读不到时两者一起停摆，不允许一个在走一个停了），区别只是被积分的功率由
+    /// <see cref="SystemPowerEstimator"/> 按**逐部件**（CPU / 显卡 / 内存 / 硬盘 / 风扇 / 主板）
+    /// 累加得出。上限取 <see cref="SystemPowerEstimator.MaxPlausibleWatt"/>（与估算器的出数闸同源）。
+    /// </summary>
+    private readonly CumulativeEnergyTracker _systemEnergy = new(SystemPowerEstimator.MaxPlausibleWatt);
+
+    /// <summary>
+    /// 最近一帧的整机功耗**逐部件分解**（v1.20.1）。悬浮提示要逐项列出"哪一项是实测、
+    /// 哪一项是模型、用的什么系数"，否则用户看到反直觉的数字时无法判断该不该信、该校准哪一项。
+    /// </summary>
+    private SystemPowerBreakdown _systemBreakdown = SystemPowerBreakdown.Unavailable;
+
+    /// <summary>最近一帧送进估算模型的逐部件输入（提示里要如实说明活动度、负载等实测量各自读到了什么）。</summary>
+    private SystemPowerInputs? _systemInputs;
+
+    /// <summary>最近一帧的整机硬件快照（内存/显卡/磁盘 + 功耗模型所需的型号信息）。</summary>
+    private SystemHardwareInfo _hardwareInfo = SystemHardwareInfo.Empty;
+
+    /// <summary>
     /// 每日能耗账本（功耗日历的数据源）。构造时即从磁盘读回历史，
     /// 因此日历天然能跨进程延续，而不是每次打开都从零开始。
     /// </summary>
@@ -215,12 +236,6 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>热力图行源（线程粒度）：行标签在构建时固化，负载每次采样刷新。</summary>
     private (string Id, double Usage)[] _heatRows = [];
 
-    /// <summary>热力图不变量是否已告警（避免每帧刷屏）。</summary>
-    private bool _heatmapInvariantWarned;
-
-    /// <summary>累积排名不变量是否已告警（避免每帧刷屏）。</summary>
-    private bool _rankInvariantWarned;
-
     private double _totalUsage;
     private string _totalUsageText = "0%";
     private string _tempText = "-";
@@ -250,6 +265,9 @@ public sealed class DashboardViewModel : ObservableObject
     private string _energyText = "-";
     private string _energyHintText = "运行期累计能耗";
     private bool _energyIsLive;
+    private string _systemEnergyText = "-";
+    private string _systemEnergyHintText = "运行期累计整机能耗（估算）";
+    private bool _systemEnergyIsLive;
 
     // ===== 功耗日历（右侧「主要负载来源」之上） =====
     private DateOnly _calendarMonth;              // 正在显示的月份，恒取该月 1 日
@@ -310,8 +328,6 @@ public sealed class DashboardViewModel : ObservableObject
         _healthBaselines = CoreHealthStore.Load();
         _healthTracker = new CoreHealthTracker(_healthBaselines);
         _healthBaselineFingerprint = Fingerprint(_healthBaselines);
-        AppLog.Write(
-            $"[HEALTH] 基线载入 {_healthBaselines.Count} 核；WHEA 源={(_whea is null ? "未接线" : "已接线")}");
 
         var info = _monitor.GetCpuInfo();
         CpuName = info.Name;
@@ -360,9 +376,6 @@ public sealed class DashboardViewModel : ObservableObject
             Environment.GetEnvironmentVariable(CoreViewEnvVar),
             "cumulative",
             StringComparison.OrdinalIgnoreCase);
-
-        if (_isCumulativeLoad)
-            AppLog.Write($"core load view = cumulative (via {CoreViewEnvVar})");
 
         // 核心分区（规范 §52）：由采集服务的分组元数据推导，界面不硬编码 P/E。
         var snapshots = _monitor.GetCoreSnapshots();
@@ -489,19 +502,39 @@ public sealed class DashboardViewModel : ObservableObject
     public string UptimeText { get => _uptimeText; private set => SetProperty(ref _uptimeText, value); }
 
     /// <summary>
-    /// 运行期累计能耗（自动换档单位：mWh / Wh / kWh），显示在状态栏运行时长右侧。
-    /// 从未拿到有效功耗读数时为 "-"，而不是拿 0 冒充。
+    /// 运行期累计 **CPU 封装能耗**（自动换档单位：mWh / Wh / kWh），显示在状态栏运行时长右侧。
+    /// 从未拿到有效功耗读数时为 "-"，而不是拿 0 冒充。整机口径见 <see cref="SystemEnergyText"/>。
     /// </summary>
     public string EnergyText { get => _energyText; private set => SetProperty(ref _energyText, value); }
 
-    /// <summary>能耗数值的悬浮说明：统计窗口、传感器覆盖率与平均功率。</summary>
+    /// <summary>CPU 能耗数值的悬浮说明：统计窗口、传感器覆盖率与平均功率。</summary>
     public string EnergyHintText { get => _energyHintText; private set => SetProperty(ref _energyHintText, value); }
 
     /// <summary>
-    /// 本帧是否读到有效功耗。false 时数值转弱色 —— 传感器缺失或性能模式暂停轮询期间，
+    /// 本帧是否读到有效 CPU 功耗。false 时数值转弱色 —— 传感器缺失或性能模式暂停轮询期间，
     /// 累计量是冻结的，用正常色显示会让人以为它还在刷新。
     /// </summary>
     public bool EnergyIsLive { get => _energyIsLive; private set => SetProperty(ref _energyIsLive, value); }
+
+    /// <summary>
+    /// 运行期累计**整机能耗（估算）**，带「≈」前缀（v1.20.0）。
+    /// <para>
+    /// 与 <see cref="EnergyText"/> 用同一套单位换档与同一套降级规则，差别只在功率口径：
+    /// 那一路是传感器实测的封装功率，这一路是 <see cref="SystemPowerEstimator"/> 按
+    /// **逐部件之和**（CPU 实测 + 显卡 + 内存 + 硬盘 + 风扇 + 主板）得出的。
+    /// **「≈」不可省** —— 界面上的估算值与实测值必须一眼能分开，否则用户会拿它当功率计读数用。
+    /// </para>
+    /// </summary>
+    public string SystemEnergyText { get => _systemEnergyText; private set => SetProperty(ref _systemEnergyText, value); }
+
+    /// <summary>
+    /// 整机能耗的悬浮说明：**逐部件构成**（每项标注实测/模型与所用系数）、统计窗口与覆盖率。
+    /// 必须写明这是估算，且必须给出分项 —— 只给一个总数，用户无从校准也无法发现某一项算错了。
+    /// </summary>
+    public string SystemEnergyHintText { get => _systemEnergyHintText; private set => SetProperty(ref _systemEnergyHintText, value); }
+
+    /// <summary>整机能耗本帧是否为实时值（与 <see cref="EnergyIsLive"/> 同步起停，见 AccumulateSample）。</summary>
+    public bool SystemEnergyIsLive { get => _systemEnergyIsLive; private set => SetProperty(ref _systemEnergyIsLive, value); }
 
     /// <summary>
     /// 功耗日历的日期格子：恒 42 格（6 周 × 7 天），翻月时**逐格更新**而非重建集合。
@@ -651,7 +684,6 @@ public sealed class DashboardViewModel : ObservableObject
         IsPerformanceMode = !IsPerformanceMode;
         ApplySamplingConfiguration(IsPerformanceMode);
         Tick();
-        AppLog.Write($"performance mode = {IsPerformanceMode}");
     }
 
     /// <summary>
@@ -667,7 +699,6 @@ public sealed class DashboardViewModel : ObservableObject
             return;
 
         IsCumulativeLoad = cumulative;
-        AppLog.Write($"core load view = {(cumulative ? "cumulative" : "live")}");
         Tick(); // 立即按新口径重绘一帧，无需等下一个采样周期。
     }
 
@@ -677,7 +708,6 @@ public sealed class DashboardViewModel : ObservableObject
         _cumulative.Reset();
         _displayOrder.Clear(); // 排名重新起步，避免沿用重置前的名次基序。
         _lastAccumulatedSeconds = _uptime.Elapsed.TotalSeconds;
-        AppLog.Write("cumulative load reset");
         Tick();
     }
 
@@ -754,25 +784,19 @@ public sealed class DashboardViewModel : ObservableObject
             // 这是两处都对、组合起来错的典型场景。
             if (_gamePowerApplied && optimization.PowerPreset == PowerPreset.None && _powerPolicy is not null)
             {
-                _powerPolicy.Restore(out var error);
-                AppLog.Write($"game mode exit: power restored ({error})");
+                _powerPolicy.Restore(out _);
             }
 
             _gamePowerApplied = false;
-            AppLog.Write("game mode exit: optimization reverted");
             return false;
         }
 
         if (optimization.GameAppliesPowerPreset && !_gamePowerApplied && _powerPolicy is not null)
         {
             // 先应用成功再置位，避免退出时去还原一个从未改动过的方案。
-            _gamePowerApplied = _powerPolicy.Apply(PowerPreset.Performance, out var error);
-            if (!_gamePowerApplied)
-                AppLog.Write($"game mode power preset FAILED: {error}");
+            _gamePowerApplied = _powerPolicy.Apply(PowerPreset.Performance, out _);
         }
 
-        AppLog.Write(
-            $"game mode enter: {game} affinity={optimization.GameAffinity} priority={optimization.GamePriority}");
         return true;
     }
 
@@ -812,11 +836,6 @@ public sealed class DashboardViewModel : ObservableObject
 
         IsPerformanceMode = false;
         ApplySamplingConfiguration(performanceMode: false);
-        AppLog.Write(
-            $"settings applied: interval={_settings.IntervalMilliseconds} sensors={_settings.SensorsEnabled} " +
-            $"game={_settings.GameDetectionEnabled} theme={_settings.Theme} layout={_settings.CoreLayout} " +
-            $"closeToTray={_settings.CloseToTray} opt={_settings.Optimization.Enabled} " +
-            $"rules={_settings.Optimization.Rules.Count}");
 
         Tick(); // 立即按新配置刷新一帧，传感器开关的视觉变化无需等下个周期。
     }
@@ -928,7 +947,10 @@ public sealed class DashboardViewModel : ObservableObject
     /// </para>
     /// </summary>
     private void AccumulateSample(
-        IReadOnlyList<CpuCoreSnapshot> snapshots, double powerWatt, double elapsedSeconds)
+        IReadOnlyList<CpuCoreSnapshot> snapshots,
+        CpuSnapshot snapshot,
+        SystemHardwareInfo hardware,
+        double elapsedSeconds)
     {
         var delta = elapsedSeconds - _lastAccumulatedSeconds;
         _lastAccumulatedSeconds = elapsedSeconds;
@@ -939,30 +961,99 @@ public sealed class DashboardViewModel : ObservableObject
         var maxDelta = _monitor.SampleInterval.TotalSeconds * IntegrationGapFactor;
         if (delta > maxDelta)
         {
-            AppLog.Write(
-                $"cumulative: gap skipped, delta={delta:0.0}s > max={maxDelta:0.0}s");
             return;
         }
 
         _cumulative.Accumulate(snapshots, delta);
 
-        // Accumulate 内部做读数有效性判定（有限值 + 0..1000W 合理域），HasLiveSample 即其结论。
-        _energy.Accumulate(powerWatt, delta);
+        // Accumulate 内部做读数有效性判定（有限值 + 合理域），返回值即其结论。
+        var energySampleLive = _energy.Accumulate(snapshot.PackagePowerW, delta);
+
+        // 整机能耗（v1.20.0 起）：**只在封装功耗有效时才积分**，与 CPU 能耗严格同步起停。
+        // 若两路各自判定有效性，传感器断开时会出现「CPU 能耗停住、整机还在涨」这种自相矛盾的画面；
+        // 而两者覆盖的其实是同一段时间，本就不该有两个口径。
+        //
+        // v1.20.1 起功率改为**逐部件**估算（CPU 实测 + 显卡 / 内存 / 硬盘 / 风扇 / 主板）：
+        // 旧版只有一个输入（封装功耗），把 CPU 之外的一切压进一个斜率，独显那一两百瓦会整体漏掉。
+        if (energySampleLive)
+        {
+            var inputs = BuildPowerInputs(snapshot, hardware);
+            _systemInputs = inputs;
+            _systemBreakdown = SystemPowerEstimator.Estimate(inputs, _settings.ToSystemPowerSettings());
+
+            // 估算越界（例如用户把分项系数填成一组互相矛盾的极端值）时送 NaN 进去：
+            // 它会让 HasLiveSample 转 false，界面照实降级为"-"，而不是继续显示一个已停更的旧数。
+            _systemEnergy.Accumulate(
+                _systemBreakdown.IsUsable ? _systemBreakdown.TotalWatt : double.NaN, delta);
+        }
 
         // 同一份样本同时进每日账本——日历与状态栏的能耗因此严格同源，不会互相打架。
-        // v1.10.3：只有通过能耗累加器合理性校验的读数才进账本。此前账本自带独立校验
-        // （仅要求有限值与非负），缺 1000W 上限——单位错误的离谱读数会被状态栏拒收、
-        // 却混进日历，两路口径就此分叉。
+        //
+        // v1.21.0 换口径：账本记的量从「CPU 封装功耗」改为「整机估算功率」，与状态栏右路同源。
+        // 三项配套的取舍：
+        //   · 门槛用**本帧**的 energySampleLive，而不是"账本里那个值能不能用" ——
+        //     _systemBreakdown 只在 energySampleLive 为真时才刷新，读不到读数的那一帧它
+        //     还是上一帧的数，拿它乘 delta 就是把"没测到"当成"还在这么耗电"。
+        //   · 估算越界（IsUsable 为假）时送 NaN 进去，Record 会拒收：宁可这一天少记，
+        //     也不记一个已经判定不可信的功率。
+        //   · 旧口径的数据不迁移：两种口径相差约两倍，而日历的档位与参照都是**相对量**，
+        //     混在一个月里会让旧日被系统性判成"明显偏少"，还会拖低参照中位数。
+        //     EnergyHistoryStore 按文件头的口径标识归档旧文件后重新开始
+        //     （旧数据留在 %APPDATA%\CORE-BUSY\energy-history.cpu-package.json）。
+        //
         // Record 返回 true 表示刚跨过零点：昨天那一格要立刻补上，不能等下一次节流刷新，
         // 否则用户会在零点后短暂看到「昨天还是空的」。
-        if (_energy.HasLiveSample && _energyLedger.Record(powerWatt, delta, DateTime.Now))
+        if (energySampleLive
+            && _energyLedger.Record(
+                _systemBreakdown.IsUsable ? _systemBreakdown.TotalWatt : double.NaN,
+                delta, DateTime.Now))
         {
-            AppLog.Write("energy ledger: day rolled over");
             RefreshCalendar();
         }
 
         _energyLedger.SaveIfNeeded();
     }
+
+    /// <summary>
+    /// 从当前的 CPU 快照与整机硬件快照组装逐部件功耗模型的输入（v1.20.1）。
+    /// <para>
+    /// 两处"NaN ↔ null"的转换是刻意的：<see cref="CpuSnapshot"/> 用 NaN 表达"读不到"
+    /// （沿用它既有的约定），而功耗模型用 null 表达"读不到"、用 0 表达"真的是 0"
+    /// （独显下电时的 0 W 就是后者）。把二者混起来会让下电的独显被当成读不到，
+    /// 又被型号估算填回一二十瓦。
+    /// </para>
+    /// </summary>
+    private static SystemPowerInputs BuildPowerInputs(CpuSnapshot snapshot, SystemHardwareInfo hardware)
+    {
+        // 独显名单以传感器层的判别为准；传感器未提供（例如刚启动还没读到）时，
+        // 退回系统硬件层的型号判别结果，避免整机估算在头几帧漏掉独显。
+        var discreteNames = snapshot.DiscreteGpuNames.Count > 0
+            ? snapshot.DiscreteGpuNames
+            : hardware.GpuIsDiscrete && hardware.GpuName.Length > 0
+                ? [hardware.GpuName]
+                : [];
+
+        return new SystemPowerInputs
+        {
+            CpuPackageWatt = Opt(snapshot.PackagePowerW),
+            GpuMeasuredWatt = Opt(snapshot.DiscreteGpuPowerW),
+            DiscreteGpuNames = discreteNames,
+            HasGpu = hardware.HasGpu,
+            GpuName = hardware.GpuName,
+            GpuLoadPercent = Opt(snapshot.GpuUtilizationPercent),
+            MemoryTotalGb = hardware.MemoryTotalGb,
+            MemoryGeneration = hardware.MemoryGeneration,
+            MemoryLoadPercent = hardware.HasMemory ? hardware.MemoryUsagePercent : null,
+            DriveCount = hardware.DriveCount,
+            StorageKinds = hardware.StorageKinds,
+            StorageThroughputMbps = Opt(snapshot.StorageThroughputMbps),
+            StorageBusyPercent = Opt(snapshot.StorageBusyPercent),
+            ActiveFanCount = snapshot.ActiveFanCount,
+        };
+    }
+
+    /// <summary>NaN / 无穷 → null（"读不到"）；其余原样（含 0）。</summary>
+    private static double? Opt(double value) => double.IsFinite(value) ? value : null;
 
     /// <summary>一次采样：读取快照并刷新全部面板。</summary>
     public void Tick()
@@ -978,11 +1069,16 @@ public sealed class DashboardViewModel : ObservableObject
 
         UptimeText = $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
+        // 0. 整机硬件状态（内存/显卡/磁盘 + 功耗模型所需的型号信息：内存代际、盘介质、独显标志）。
+        //    **本帧只读一次**：能耗模型与状态栏共用同一份，否则"估算用的内存占用/盘数"
+        //    与"状态栏显示的内存占用/盘数"会在数值上分叉 —— 用户对着两处数字对不上账。
+        var hardware = ReadSystemHardware();
+
         // 1. 累积负载与累积能耗的积分。**始终累积**（与当前视图无关），这样切到累积
         //    视图、或随时瞄一眼状态栏能耗，看到的都是完整历史而非从某刻才起步。
         //    Δt 取墙钟差而非采样周期常量：周期可被用户改档、性能模式另有一套覆盖，
         //    用常量会让积分权重随档位失真。
-        AccumulateSample(snapshots, snapshot.PackagePowerW, elapsed.TotalSeconds);
+        AccumulateSample(snapshots, snapshot, hardware, elapsed.TotalSeconds);
 
         // 2. 核心 Tile + 热力图推入（扁平序 = 分区序 = 热力图行序）。
         if (IsCumulativeLoad)
@@ -1023,9 +1119,10 @@ public sealed class DashboardViewModel : ObservableObject
         // 4d. 规格行延迟重同步（v1.10.4）。
         ResyncSpecsOnce();
 
-        // 4e. 整机硬件状态（内存/显卡/磁盘，v1.11.0；v1.16.0 加占用与温度）。文本未变时
-        //     SetProperty 不触发通知，因此每帧调用不会造成无效重绘；磁盘等慢变量由服务内部节流。
-        RefreshSystemHardware(snapshot);
+        // 4e. 整机硬件状态文本（内存/显卡/磁盘，v1.11.0；v1.16.0 加占用与温度）。
+        //     快照在第 0 步已读好（能耗模型要用），这里只负责把它写成界面文本。
+        //     文本未变时 SetProperty 不触发通知，因此每帧调用不会造成无效重绘。
+        ApplySystemHardware(hardware, snapshot);
 
         // 4f. CPU 核心优化（v1.12.0）：进程规则套用 + 游戏模式联动。
         //     规则重扫在服务内部按 5 秒节流，这里每帧调用只付出一次时间比较的代价。
@@ -1269,7 +1366,6 @@ public sealed class DashboardViewModel : ObservableObject
         if (_selfTestRunning)
         {
             _selfTestCancellation?.Cancel();
-            AppLog.Write("[SELFTEST] 用户请求中断");
             return;
         }
 
@@ -1300,7 +1396,6 @@ public sealed class DashboardViewModel : ObservableObject
         if (targets.Length == 0)
         {
             SelfTestTipText = "自检无法开始：未拿到核心的逻辑处理器索引（采集层尚未就绪）。";
-            AppLog.Write("[SELFTEST] 无法开始：无可用绑核目标");
             return;
         }
 
@@ -1310,7 +1405,6 @@ public sealed class DashboardViewModel : ObservableObject
 
         SelfTestText = "停止";
         SelfTestTipText = $"自检进行中：0/{targets.Length} 核（每核约 {CoreSelfTestArchive.DefaultDurationSeconds:0} 秒）";
-        AppLog.Write($"[SELFTEST] 开始：{targets.Length} 核 × {CoreSelfTestArchive.DefaultDurationSeconds:0} 秒，逐核绑核执行");
 
         var duration = TimeSpan.FromSeconds(CoreSelfTestArchive.DefaultDurationSeconds);
 
@@ -1352,17 +1446,9 @@ public sealed class DashboardViewModel : ObservableObject
         HealthHintText = CoreHealthFormatter.BuildOverviewTooltip(_healthScores, SelfTestSummaryText);
 
         var passed = outcomes.Count(o => o.Passed);
-        AppLog.Write($"[SELFTEST] 结束：{passed}/{outcomes.Count} 核通过"
-                     + (outcomes.Count == 0 ? "（未执行任何核心）" : string.Empty));
 
         foreach (var o in outcomes)
         {
-            AppLog.Write(
-                $"[SELFTEST] {o.CoreId} {CoreHealthFormatter.SelfTestVerdict(o)}"
-                + $" 轮次={o.Passes} 整数不一致={o.IntegerMismatches} 浮点失稳={o.FpBitInstabilities}"
-                + $" 浮点最大相对误差={o.FpMaxRelativeError:E2}"
-                + $" LP=[{string.Join(",", o.LogicalProcessors)}]"
-                + (o.Error is null ? string.Empty : $" 错误={o.Error}"));
         }
     }
 
@@ -1429,81 +1515,6 @@ public sealed class DashboardViewModel : ObservableObject
         }
 
         RefreshGroupMode();
-        VerifyCumulativeRanking(order, rankById);
-    }
-
-    /// <summary>
-    /// 累积排名不变量自检（回归守卫）。
-    /// <para>
-    /// 排名正确性依赖一个跨层约定：<c>DashboardCoreVm.Id</c> 必须与 <c>CpuCoreSnapshot.Id</c> 同串
-    /// （累积积分器按该字符串索引，名次表也用同一把钥匙）。
-    /// 一旦两个口径漂移，名次会静默退化成"自然顺序"——界面看起来完全正常，
-    /// 数据却是错的，属于最难靠肉眼发现的失真。故在此固化为运行期断言。
-    /// </para>
-    /// 断言三件事：① 每颗核都拿到了名次；② 名次恰为 1..N 的排列（不重不漏）；
-    /// ③ 每段分区内的显示顺序按名次非降。破坏时写日志（仅状态翻转时写一次，不随帧刷屏）。
-    /// </summary>
-    private void VerifyCumulativeRanking(
-        IReadOnlyList<DashboardCoreVm> order, IReadOnlyDictionary<string, int> rankById)
-    {
-        string? problem = null;
-
-        if (order.Count != _allCores.Count)
-        {
-            problem = $"order={order.Count} cores={_allCores.Count}";
-        }
-        else
-        {
-            var seen = new bool[order.Count + 1];
-            foreach (var core in _allCores)
-            {
-                if (!rankById.TryGetValue(core.Id, out var rank) || rank < 1 || rank > order.Count)
-                {
-                    problem = $"id '{core.Id}' 无名次（Id 口径与快照不一致）";
-                    break;
-                }
-
-                if (seen[rank])
-                {
-                    problem = $"名次 {rank} 重复";
-                    break;
-                }
-
-                seen[rank] = true;
-            }
-        }
-
-        if (problem is null)
-        {
-            foreach (var group in CoreGroups)
-            {
-                for (var i = 1; i < group.Cores.Count; i++)
-                {
-                    var previous = rankById[group.Cores[i - 1].Id];
-                    var current = rankById[group.Cores[i].Id];
-                    if (current < previous)
-                    {
-                        problem = $"{group.Title} 显示顺序未按名次降序（{previous} → {current}）";
-                        break;
-                    }
-                }
-
-                if (problem is not null)
-                    break;
-            }
-        }
-
-        if (problem is null)
-        {
-            _rankInvariantWarned = false;
-            return;
-        }
-
-        if (_rankInvariantWarned)
-            return;
-
-        _rankInvariantWarned = true;
-        AppLog.Write($"[INVARIANT] cumulative ranking: {problem}");
     }
 
     /// <summary>
@@ -1575,40 +1586,220 @@ public sealed class DashboardViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 刷新状态栏的累积能耗读数与悬浮说明。
+    /// 刷新状态栏的两路累积能耗读数（CPU 封装 / 整机估算）与各自的悬浮说明。
     /// <para>
     /// 这里最容易出的错是把「没有数据」显示成「0」：0 Wh 与「读不到」在界面上完全不同义，
     /// 前者说这段时间的确没耗电，后者说不知道。非管理员会话下传感器返回 NaN 是常态
     /// （占多数机器上跑的情形），因此必须区分。参见 PeakTempText 同样的处理取舍。
+    /// 整机能耗把这条原则推得更远一步：它连数据源都是派生的，故「估算」这一身份必须
+    /// 体现在数值（「≈」）与提示（逐部件构成 + 分项系数）里。
     /// </para>
     /// <para>
     /// 有数据但并非全程有效时（例如中途关闭了传感器、或性能模式暂停轮询），
     /// 覆盖率会低于 100%，此时累计量只代表「观测到的那部分时间」。这句话必须出现在
     /// Tooltip 里，否则用户会把部分时段的结果当成全程结果来读。
     /// </para>
+    /// <para>
+    /// 两路共用同一份统计窗口与覆盖率（<see cref="AccumulateSample"/> 保证两路同起同停），
+    /// 因此这里只求一次 <c>coverage</c>；若哪天两路覆盖率出现分叉，那一定是积分闸出了问题，
+    /// 而不是本方法算错。
+    /// </para>
     /// </summary>
     private void UpdateEnergyReadout()
     {
         EnergyIsLive = _energy.HasLiveSample;
+        SystemEnergyIsLive = _systemEnergy.HasLiveSample;
 
         if (_energy.ObservedSeconds <= 0)
         {
             EnergyText = "-";
-            EnergyHintText = "运行期累计能耗\n功耗传感器不可用\n需以管理员身份运行方可读取封装功耗";
+            EnergyHintText = "运行期累计 CPU 封装能耗\n功耗传感器不可用\n需以管理员身份运行方可读取封装功耗";
+
+            // 整机估算**没有独立数据源**，它的全部输入里 CPU 项只能来自封装读数 ——
+            // 拿不到封装读数时唯一诚实的输出是 "-"。**绝不允许退回"按 TDP 猜一个 CPU 功耗"**：
+            // 那会造出「左边 CPU 一路 "-"、右边整机却有个数」的自相矛盾画面，比不显示更糟。
+            SystemEnergyText = "-";
+            SystemEnergyHintText =
+                "运行期累计整机能耗（估算，非实测）\n逐部件模型缺 CPU 项：封装功耗不可读\n"
+                + "（按型号硬估 CPU 功耗会与左侧实测路自相矛盾，故整条不出数）";
             return;
         }
 
         EnergyText = CumulativeEnergyTracker.FormatEnergy(_energy.Joules);
+
+        // 「≈」是数值语义的一部分，不是装饰：本值与左侧 CPU 值同为 Wh 量级、同样自动换档，
+        // 不标就分不出哪个是传感器实测、哪个是模型外推。
+        SystemEnergyText = "≈ " + CumulativeEnergyTracker.FormatEnergy(_systemEnergy.Joules);
 
         var window = TimeSpan.FromSeconds(_energy.ObservedSeconds);
         var coverage = _cumulative.ObservedSeconds > 0
             ? Math.Min(100.0, _energy.ObservedSeconds / _cumulative.ObservedSeconds * 100.0)
             : 100.0;
 
+        var span = $"{(int)window.TotalHours}:{window.Minutes:00}:{window.Seconds:00}";
+
         EnergyHintText =
-            $"运行期累计能耗\n统计 {(int)window.TotalHours}:{window.Minutes:00}:{window.Seconds:00}"
+            $"运行期累计 CPU 封装能耗\n统计 {span}"
             + $" · 覆盖 {coverage:0}%\n平均功率 {FmtValueUnit(_energy.AverageWatt, "0", "W")}";
+
+        SystemEnergyHintText =
+            "运行期累计整机能耗（**估算**，非实测）\n逐部件构成（本帧）\n"
+            + DescribeSystemPower()
+            + $"\n统计 {span} · 覆盖 {coverage:0}%"
+            + $"\n平均整机功率 {FmtValueUnit(_systemEnergy.AverageWatt, "0", "W")}"
+            + "\n逐项系数可校准：%APPDATA%\\CORE-BUSY\\settings.json"
+            // 键名一律用 nameof 从 AppSettings 现场取，**绝不写字符串字面量**：
+            // v1.20.1 这里曾手写成 BoardWatts / FanWatts / GpuFallbackWatts / DramWattsPerGb，
+            // 而 settings.json 里真实的键是 SystemPowerBoardWatts / SystemPowerFanWatts / …（少了前缀）。
+            // 用户照着提示改配置不会有任何效果，而且**不报错** —— 静默失效。
+            // nameof 让键名与属性定义同源；属性改名时提示跟着变。
+            // （settings.json 由 SettingsStore 序列化，未设命名策略，键名 = 属性名。）
+            + $"\n（{nameof(AppSettings.SystemPowerCalibration)}"
+            + $" / {nameof(AppSettings.SystemPowerBoardWatts)}"
+            + $" / {nameof(AppSettings.SystemPowerFanWatts)}"
+            + $" / {nameof(AppSettings.SystemPowerGpuFallbackWatts)}"
+            + $" / {nameof(AppSettings.SystemPowerDramWattsPerGb)}）";
     }
+
+    /// <summary>
+    /// 逐部件构成文案（v1.20.1）。每一行都必须能回答"这个数是怎么来的"：
+    /// 实测的写"实测"，模型的写清额定值/系数与实测量，判别不出的如实说"未计入"。
+    /// <para>
+    /// 这不是装饰性说明。整机估算是**合成量**，用户看到反直觉的数时唯一的出路是逐项核对；
+    /// 只给一个总数等于把"估算"包装成"读数"。
+    /// </para>
+    /// </summary>
+    private string DescribeSystemPower()
+    {
+        var breakdown = _systemBreakdown;
+        var hardware = _hardwareInfo;
+        var inputs = _systemInputs;
+
+        if (!breakdown.IsUsable && double.IsFinite(breakdown.CpuWatt))
+        {
+            // 有 CPU 项却出不了总数：只可能是分项系数被填成了一组极端的组合。
+            return "  估算总量越界，拒绝出数（检查分项系数设置）";
+        }
+
+        var lines = new List<string>();
+
+        if (double.IsFinite(breakdown.CpuWatt))
+            lines.Add($"  CPU 封装 {breakdown.CpuWatt:0.#} W · 实测");
+
+        if (hardware.HasGpu)
+            lines.Add("  显卡 " + DescribeGpu(breakdown, inputs));
+
+        if (hardware.MemoryTotalGb > 0)
+            lines.Add("  内存 " + DescribeMemory(breakdown, hardware, inputs));
+
+        if (hardware.DriveCount > 0)
+            lines.Add("  硬盘 " + DescribeStorage(breakdown, hardware, inputs));
+
+        lines.Add($"  风扇 ≈ {breakdown.FanWatt:0.#} W · {DescribeFanCount(inputs)}"
+                  + $"（每风扇 {SystemPowerEstimator.NormalizeFan(_settings.SystemPowerFanWatts):0.#} W）");
+        lines.Add($"  主板等 {breakdown.BoardWatt:0.#} W · 固定开销");
+
+        var calibration = SystemPowerEstimator.NormalizeCalibration(_settings.SystemPowerCalibration);
+        var calibrationText = Math.Abs(calibration - 1.0) < 0.0001 ? string.Empty : $"，校准 ×{calibration:0.##}";
+        lines.Add($"  **合计 ≈ {breakdown.TotalWatt:0.#} W**{calibrationText}");
+
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>显卡项文案：实测 / 型号估算 / 核显已计入 / 型号未识别，四种身份必须分得开。</summary>
+    private static string DescribeGpu(SystemPowerBreakdown breakdown, SystemPowerInputs? inputs)
+    {
+        var count = inputs?.DiscreteGpuNames.Count ?? 0;
+        var countText = count > 1 ? $"（{count} 块）" : string.Empty;
+
+        return breakdown.GpuSource switch
+        {
+            GpuPowerSource.Measured =>
+                $"{breakdown.GpuWatt:0.#} W · 实测{countText}",
+
+            GpuPowerSource.RatedByModel =>
+                $"≈ {breakdown.GpuWatt:0.#} W · 按型号额定 {breakdown.GpuRatedWatt:0} W"
+                + $" × {DescribeGpuLoad(breakdown.GpuLoadPercent)}{countText}",
+
+            GpuPowerSource.IntegratedInPackage =>
+                "0 W · 核显，功耗已计入 CPU 封装（不重复计）",
+
+            _ => "0 W · 型号未识别，**未计入**（可用 GpuFallbackWatts 指定额定功率）",
+        };
+    }
+
+    private static string DescribeGpuLoad(double? load)
+        => load is { } value && double.IsFinite(value) ? $"负载 {value:0}%" : "负载不可读，按空闲档计";
+
+    private static string DescribeMemory(
+        SystemPowerBreakdown breakdown, SystemHardwareInfo hardware, SystemPowerInputs? inputs)
+    {
+        var generation = inputs?.MemoryGeneration ?? MemoryGeneration.Unknown;
+        var generationText = generation switch
+        {
+            MemoryGeneration.Ddr3 => "DDR3",
+            MemoryGeneration.Ddr4 => "DDR4",
+            MemoryGeneration.Ddr5 => "DDR5",
+            MemoryGeneration.LpDdr4 => "LPDDR4",
+            MemoryGeneration.LpDdr5 => "LPDDR5",
+            _ => "代际未知（按 DDR4 系数）",
+        };
+
+        var load = inputs?.MemoryLoadPercent;
+        var loadText = load is { } value ? $"占用 {value:0}%" : "占用不可读，按空闲档计";
+        var capacity = hardware.MemoryModuleCount > 0 && hardware.MemoryModuleCapacityGb > 0
+            ? $"{hardware.MemoryModuleCount}×{hardware.MemoryModuleCapacityGb:0.#}G"
+            : $"{hardware.MemoryTotalGb:0.#} GB";
+
+        return $"≈ {breakdown.MemoryWatt:0.#} W · {capacity} {generationText} · {loadText}（型号模型，无传感器）";
+    }
+
+    private static string DescribeStorage(
+        SystemPowerBreakdown breakdown, SystemHardwareInfo hardware, SystemPowerInputs? inputs)
+    {
+        var media = new List<string>();
+        foreach (var kind in hardware.StorageKinds)
+        {
+            var text = MediaText(kind);
+            if (!media.Contains(text))
+                media.Add(text);
+        }
+
+        if (media.Count == 0)
+            media.Add("介质未知");
+
+        return $"≈ {breakdown.StorageWatt:0.#} W · {hardware.DriveCount} 块"
+               + $"{string.Join("+", media)} · {DescribeStorageActivity(inputs)}（型号模型，无传感器）";
+    }
+
+    private static string MediaText(StorageMediaKind kind) => kind switch
+    {
+        StorageMediaKind.Nvme => "NVMe",
+        StorageMediaKind.SataSsd => "SATA SSD",
+        StorageMediaKind.Hdd => "机械盘",
+        _ => "介质未知",
+    };
+
+    private static string DescribeStorageActivity(SystemPowerInputs? inputs)
+    {
+        if (inputs?.StorageThroughputMbps is { } mbps && double.IsFinite(mbps))
+        {
+            // 界面**不许**把模型已判定不可信的读数当正常值展示：越界时如实说明它被丢弃、
+            // 功率按哪个口径算的。否则会出现「显示 269535 MB/s、功率却按空闲算」这种
+            // 界面与模型两套口径的自相矛盾画面 —— v1.21.0 实机取证真的抓到了这一帧。
+            return mbps <= SystemPowerEstimator.MaxPlausibleThroughputMbps
+                ? $"活动 {mbps:0.#} MB/s"
+                : $"活动读数异常（{mbps:0.#} MB/s，超合理域），已按忙率/空闲档计";
+        }
+
+        if (inputs?.StorageBusyPercent is { } busy && double.IsFinite(busy))
+            return $"忙率 {busy:0}%";
+
+        return "活动度不可读，按空闲档计";
+    }
+
+    private static string DescribeFanCount(SystemPowerInputs? inputs)
+        => inputs is { ActiveFanCount: > 0 } ? $"{inputs.ActiveFanCount} 个转动" : "无转动风扇";
 
     /// <summary>
     /// 翻到上一个 / 下一个月（offsetMonths 为负向前翻）。
@@ -1628,7 +1819,6 @@ public sealed class DashboardViewModel : ObservableObject
             return;
 
         _calendarMonth = target;
-        AppLog.Write($"calendar month = {target:yyyy-MM}");
         RefreshCalendar();
     }
 
@@ -1668,6 +1858,8 @@ public sealed class DashboardViewModel : ObservableObject
         //   · 不用当月最大值：极值定义上使「最高那天」恒为 5 档，一个异常日就能压平整月。
         // 跨平台量级差异仍由"相对参照"而非绝对阈值解决，这一点与原实现一致。
         // 达标 = 当天有读数且观测 ≥ MinRankableObservedSeconds；没看够的日子不参与建立参照。
+        // v1.21.0：账本口径已是**整机估算功率**，故这里的"平均功率"即平均整机功率；
+        // 相对定档对口径的绝对量级不敏感（全体同乘一个系数不改变档位），这一点不受换口径影响。
         double monthTotal = 0;
         var recordedDays = 0;
         var fulfilledWatt = new List<double>();
@@ -1714,15 +1906,19 @@ public sealed class DashboardViewModel : ObservableObject
         // 空状态把「为什么空」直接写进这一行，而不是另起一行说明：
         // 多一行会让右列三段面板总高越过可视区，默认就冒出滚动条。
         // 且必须区分两种成因：传感器关着时「怎么等都不会有记录」，让用户直接看到原因。
+        //
+        // v1.21.0：这一行是**唯一常驻可见**的口径说明（标题上的口径 ToolTip 默认是折起的，
+        // 见 PowerCalendarPanel.xaml 的取舍记录），所以必须把「整机」「≈（估算）」写在这里，
+        // 否则用户会把日历上的数直接当成 CPU 或整机的实测累计量。
         CalendarSummaryText = recordedDays == 0
             ? (_monitor.SensorsEnabled
                 ? "无记录 · 尚无有效读数"
                 : "无记录 · 硬件传感器未启用")
             : referenceWatt > 0
-                ? $"本月 {CumulativeEnergyTracker.FormatEnergy(monthTotal)} · 记录 {recordedDays} 天"
-                    + $" · 常见日 {referenceWatt:0} W"
-                : $"本月 {CumulativeEnergyTracker.FormatEnergy(monthTotal)} · 记录 {recordedDays} 天"
-                    + " · 参照不足";
+                ? $"本月整机 ≈ {CumulativeEnergyTracker.FormatEnergy(monthTotal)}"
+                    + $" · 记录 {recordedDays} 天 · 常见日 {referenceWatt:0} W"
+                : $"本月整机 ≈ {CumulativeEnergyTracker.FormatEnergy(monthTotal)}"
+                    + $" · 记录 {recordedDays} 天 · 参照不足";
         CanGoNextMonth = first < FirstOfMonth(today);
         _lastCalendarRefresh = DateTime.Now;
     }
@@ -1910,11 +2106,11 @@ public sealed class DashboardViewModel : ObservableObject
         // PropertyChanged。若先手动把字段赋成 next，setter 里就成了"新值 == 旧值"→ 永不通知
         // → HeatMapControl.RowsData 恒为 null → OnRender 开头的空值判断直接 return
         // → 热力图整片空白（连底板都不画）。
-        // 阴险之处：VerifyHeatmapInvariants 校验的是 _heatmap/_heatRows/_heatmapLabels 三者行数，
-        // 而字段是**真的**被更新了，所以不变量一路通过、日志一行不写 —— 只有截图能发现。
+        // 阴险之处：**只看字段与行数的自检拦不住这个缺陷** —— 字段是真的被更新了、行数也对得上，
+        // 坏掉的只有"通知没发出去"这一件事。v1.20.0 之前那个「三者行数必须一致」的运行期不变量
+        // 正是因此一路通过（它已随运行日志功能一起移除：唯一输出通道就是日志，给不出可观察的结论）。
+        // 这条只能靠截图发现，回归保护在 .workbuddy 的热力图几何取证脚本里。
         Heatmap = next;
-
-        VerifyHeatmapInvariants();
     }
 
     /// <summary>按行数申请一组行数组（每行 <see cref="HeatmapSeconds"/> 列）。仅形状变化时调用。</summary>
@@ -1925,37 +2121,6 @@ public sealed class DashboardViewModel : ObservableObject
             rows[r] = new double[HeatmapSeconds];
 
         return rows;
-    }
-
-    /// <summary>
-    /// 热力图不变量自检（回归守卫）：行数据、行标签、行源三者的行数必须同源一致。
-    /// <para>
-    /// 历史缺陷：PushHeatmap 取物理核数（8）铺行，而 HeatmapLabels 取逻辑线程数（16），
-    /// 结果 HeatMapControl.EnsureLabelCache 的 Math.Min 把标签截到 8 条，C4~C7 在热力图里整体消失。
-    /// 该缺陷属"两份口径打架"型，静态 review 难以长期挡住，故在此固化为运行期断言。
-    /// 不变量被破坏时写日志（仅在状态翻转时写一次，不随帧刷屏），日志落在 exe 同级 logs/debug.log。
-    /// </para>
-    /// </summary>
-    private void VerifyHeatmapInvariants()
-    {
-        var labelCount = string.IsNullOrEmpty(_heatmapLabels)
-            ? 0
-            : _heatmapLabels.Split(',', StringSplitOptions.RemoveEmptyEntries).Length;
-
-        var consistent = _heatmap.Length == _heatRows.Length && labelCount == _heatRows.Length;
-
-        if (consistent)
-        {
-            _heatmapInvariantWarned = false;
-            return;
-        }
-
-        if (_heatmapInvariantWarned)
-            return;
-
-        _heatmapInvariantWarned = true;
-        AppLog.Write(
-            $"[INVARIANT] heatmap row mismatch: rows={_heatmap.Length} labels={labelCount} source={_heatRows.Length}");
     }
 
     /// <summary>刷新热力图行标签（逗号分隔）。行标签与 RowsData 行数同源，保证逐行对齐不被截断。</summary>
@@ -2024,21 +2189,28 @@ public sealed class DashboardViewModel : ObservableObject
     /// 磁盘等慢变量由采集层内部节流。占用 / 温度来自同帧传感器快照（NaN = 不可用）。
     /// </para>
     /// </summary>
-    private void RefreshSystemHardware(CpuSnapshot snapshot)
+    /// <summary>
+    /// 读一次整机硬件状态（内存 / 显卡 / 磁盘 + 功耗模型所需的型号信息）。
+    /// 服务未接线或读取失败时返回空快照（三项 Has* 均为 false → 状态栏整项折叠）。
+    /// </summary>
+    private SystemHardwareInfo ReadSystemHardware()
     {
         if (_systemHardware is null)
-            return;
+            return SystemHardwareInfo.Empty;
 
-        SystemHardwareInfo info;
         try
         {
-            info = _systemHardware.Read();
+            return _systemHardware.Read();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"system hardware read FAILED: {ex.GetType().Name}: {ex.Message}");
-            return;
+            return SystemHardwareInfo.Empty;
         }
+    }
+
+    private void ApplySystemHardware(SystemHardwareInfo info, CpuSnapshot snapshot)
+    {
+        _hardwareInfo = info;
 
         // 内存：已用 / 总量 + 占用率。口径为「可供 OS 使用的物理内存」，与任务管理器一致。
         // 内存条通常无独立温度传感器，不显示温度（主板 SuperIO 的"内存"温区并非内存条本体）。

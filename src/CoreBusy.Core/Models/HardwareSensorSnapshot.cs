@@ -15,6 +15,14 @@ public sealed class HardwareSensorSnapshot
     /// <summary>CPU 风扇转速（RPM），来自主板 SuperIO；不可用时为 null。</summary>
     public double? FanRpm { get; init; }
 
+    /// <summary>
+    /// 正在转动的风扇数量（v1.20.1）。只数"转速落在合理域内"的风扇传感器：
+    /// 空风扇接口常报 0（本机 5 个接口只 1 个在转），少数主板会报一个恒定的非零噪声值，
+    /// 故既排除 0 也排除越界值。整机功耗估算用它的**个数**，不用转速 ——
+    /// 风扇的 P–Q 曲线随型号差异太大，用转速反推功率比取常数更不准。
+    /// </summary>
+    public int ActiveFanCount { get; init; }
+
     /// <summary>按物理核心序号（0 基）索引的实际频率（MHz）；缺失核心表示该核心频率不可用。</summary>
     public IReadOnlyDictionary<int, double> CoreClockMhz { get; init; } = new Dictionary<int, double>();
 
@@ -44,6 +52,23 @@ public sealed class HardwareSensorSnapshot
     /// <summary>主显卡核心占用率（0-100）。不可用时为 null。</summary>
     public double? GpuUtilizationPercent { get; init; }
 
+    /// <summary>
+    /// **全部独显**实测功率之和（W，v1.20.1）。null 表示"没有任何独显功率传感器"
+    /// （不是 0 W）—— 核显与驱动缺失都属于这一情形，由功耗模型按型号估算兜底。
+    /// <para>
+    /// 只有独显才可能有功率传感器：NVIDIA 经 NVML、AMD 独显经 ADL 暴露 <c>SensorType.Power</c>。
+    /// 多卡机器（含双独显）取**求和**，因为功耗模型是逐部件累加的。
+    /// </para>
+    /// </summary>
+    public double? DiscreteGpuPowerW { get; init; }
+
+    /// <summary>
+    /// 被判为**独显**的 GPU 节点名（v1.20.1）。判据是型号（<c>GpuRatedPower.LooksDiscrete</c>）：
+    /// 核显的功耗已在 CPU 封装读数之内，把它算进来就是重复计；独显必须在封装之外单独计。
+    /// 型号判别不出的卡不进本列表（宁可不计也不冒充核显）。
+    /// </summary>
+    public IReadOnlyList<string> DiscreteGpuNames { get; init; } = [];
+
     /// <summary>硬盘最高温度（℃，多块盘取最热）。SMART 不可用时为 null。</summary>
     public double? DriveTemperatureC { get; init; }
 
@@ -52,6 +77,22 @@ public sealed class HardwareSensorSnapshot
     /// 但"哪块盘"必须能查，否则"114 ℃"这种坏读数无从定位。
     /// </summary>
     public IReadOnlyList<DriveTemperatureReading> DriveTemperatures { get; init; } = [];
+
+    /// <summary>
+    /// 最忙那块盘的吞吐（MB/s，v1.20.1）。硬盘没有功率传感器，但吞吐是**实测**的，
+    /// 整机功耗模型用它驱动存储项的功率摆幅（空闲 → 满载之间插值）。
+    /// 优先取 LHM 的 Throughput 传感器；本机 NVMe 的 Throughput 为 null，
+    /// 故实现上退到"累计读写量差商"（见传感器实现）。两个口径都拿不到时为 null。
+    /// </summary>
+    public double? StorageThroughputMbps { get; init; }
+
+    /// <summary>
+    /// 最忙那块盘的忙率（%，v1.20.1）。吞吐不可读时的备选口径，
+    /// 取 <c>Read Activity</c> 与 <c>Write Activity</c> 的大者 ——
+    /// **刻意不用 Total Activity**：本机实测该传感器在读写都≈0 时仍报 99.999985，
+    /// 放它进来会把一块空闲盘常年算成满载。
+    /// </summary>
+    public double? StorageBusyPercent { get; init; }
 
     public static HardwareSensorSnapshot Empty { get; } = new();
 }

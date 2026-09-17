@@ -183,9 +183,6 @@ public sealed class AsusWmiFanReader : IDisposable
 
         _lastLoggedAvailability = reading.HasValue;
 
-        WmiLog.Write(reading.HasValue
-            ? $"[FAN] ASUS WMI 风扇已可读：{_rawEvidence}"
-            : $"[FAN] ASUS WMI 风扇不可读：{reading.Detail}");
     }
 
     private static string Format(double? rpm) => rpm is { } v ? $"{v:0} RPM" : "-";

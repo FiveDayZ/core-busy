@@ -31,7 +31,6 @@ public partial class MainWindow : Window
     {
         base.OnSourceInitialized(e);
         _viewModel.Start();
-        AppLog.Write("dashboard window shown");
     }
 
     private void OnMinimize(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -63,14 +62,12 @@ public partial class MainWindow : Window
                     "CORE-BUSY", "已最小化到托盘：双击图标恢复显示，右键图标可退出。", 3000);
             }
 
-            AppLog.Write("close intercepted: hidden to tray");
             return;
         }
 
         DisposeTrayIcon();
         _viewModel.Stop();
         base.OnClosing(e);
-        AppLog.Write("dashboard window closed");
     }
 
     /// <summary>
@@ -103,9 +100,8 @@ public partial class MainWindow : Window
             tray.Activate += (_, _) => RestoreFromTray();
             _trayIcon = tray;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"tray icon init failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -148,7 +144,6 @@ public partial class MainWindow : Window
         {
             var before = Services.SettingsStore.Load();
             _viewModel.ApplySettings(dialog.Result);
-            AppLog.Write("settings dialog confirmed");
 
             if (dialog.Result.RequiresRestartComparedTo(before)
                 && MessageBox.Show(
@@ -178,9 +173,8 @@ public partial class MainWindow : Window
                 });
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"restart failed: {ex.Message}");
         }
 
         _realExit = true; // 重启流程不允许被"关闭到托盘"拦截
@@ -214,16 +208,13 @@ public partial class MainWindow : Window
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
-            AppLog.Write("[SENSOR] 用户取消了提权重启，保持当前实例");
             return;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[SENSOR] 提权重启失败: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 
-        AppLog.Write("[SENSOR] 已请求以管理员身份重启");
         _realExit = true; // 重启流程不允许被"关闭到托盘"拦截
         _viewModel.Stop();
         Application.Current.Shutdown();
@@ -253,12 +244,25 @@ public partial class MainWindow : Window
     private void OnResetCumulativeClick(object sender, RoutedEventArgs e)
         => _viewModel.ResetCumulativeLoad();
 
-    /// <summary>标题栏"更多"：打开运行日志所在文件夹。</summary>
-    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 标题栏「更多」：在资源管理器里打开数据文件夹。
+    /// <para>
+    /// v1.20.0 前这里打开的是 exe 同级的 logs —— 运行日志功能移除后，那已是一个
+    /// 永远为空的目录（本方法还会顺手把它建出来）。改为指向真正的数据目录：
+    /// settings.json / energy-history.json / core-health.json 都在那里，
+    /// 而设置里的悬浮提示正让用户去那儿校准整机功耗系数，指过去才用得上。
+    /// </para>
+    /// <para>
+    /// 路径复用 <see cref="CoreBusy.App.Services.EnergyHistoryStore.DataDirectory"/> 的解析，
+    /// **不**自己拼 %APPDATA%：那个解析认 COREBUSY_DATA_DIR 覆盖，
+    /// 自己拼会得到与写盘位置不一致的目录。
+    /// </para>
+    /// </summary>
+    private void OnOpenDataFolder(object sender, RoutedEventArgs e)
     {
         try
         {
-            var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "logs");
+            var dir = CoreBusy.App.Services.EnergyHistoryStore.DataDirectory;
             System.IO.Directory.CreateDirectory(dir);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
@@ -266,9 +270,8 @@ public partial class MainWindow : Window
                 UseShellExecute = true,
             });
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"open log folder failed: {ex.Message}");
         }
     }
 }

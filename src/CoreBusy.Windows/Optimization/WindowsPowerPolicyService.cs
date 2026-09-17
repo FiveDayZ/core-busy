@@ -74,7 +74,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
     {
         if (!TryGetActiveScheme(out var scheme))
         {
-            OptimizationLog.Write("power read failed: cannot resolve active scheme");
             return new PowerPolicyState(false, null, null, null, HasBackup, "读取当前电源方案失败");
         }
 
@@ -89,7 +88,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
               $"最大状态 {(maxState?.ToString(CultureInfo.InvariantCulture) ?? "-")}%"
             : "电源方案中未找到可读的处理器设置";
 
-        OptimizationLog.Write($"power policy read available={available} {detail}");
         return new PowerPolicyState(available, parking, epp, maxState, HasBackup, detail);
     }
 
@@ -138,7 +136,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         Activate(scheme);
 
         var state = Read();
-        OptimizationLog.Write($"power preset={preset} applied, now: {state.Detail}");
 
         if (failures.Count > 0)
         {
@@ -182,7 +179,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         }
 
         Activate(scheme);
-        OptimizationLog.Write($"power policy restored, failures={failures.Count}");
 
         if (failures.Count > 0)
         {
@@ -215,7 +211,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
 
         if (status != 0 || size < sizeof(uint))
         {
-            OptimizationLog.Write($"power read {settingGuid} dc={dc} failed: status={status} size={size}");
             return null;
         }
 
@@ -238,9 +233,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         status = dc
             ? PowerWriteDCValueIndex(IntPtr.Zero, ref schemeGuid, ref subGroup, ref setting, (uint)value)
             : PowerWriteACValueIndex(IntPtr.Zero, ref schemeGuid, ref subGroup, ref setting, (uint)value);
-
-        if (status != 0)
-            OptimizationLog.Write($"power write {settingGuid} dc={dc} value={value} failed: status={status}");
 
         return status == 0;
     }
@@ -276,9 +268,7 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
     private static void Activate(Guid scheme)
     {
         var schemeGuid = scheme;
-        var status = PowerSetActiveScheme(IntPtr.Zero, ref schemeGuid);
-        if (status != 0)
-            OptimizationLog.Write($"power activate failed: status={status}");
+        _ = PowerSetActiveScheme(IntPtr.Zero, ref schemeGuid);
     }
 
     /// <summary>解除设置项的隐藏标记（Attributes=0）。</summary>
@@ -292,12 +282,10 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
                 return false;
 
             key.SetValue("Attributes", 0, RegistryValueKind.DWord);
-            OptimizationLog.Write($"power unhide {settingGuid}: Attributes=0");
             return true;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            OptimizationLog.Write($"power unhide {settingGuid} failed: {ex.Message}");
             return false;
         }
     }
@@ -334,8 +322,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
 
             Directory.CreateDirectory(DirectoryPath);
             File.WriteAllText(BackupPath, JsonSerializer.Serialize(backup, JsonOptions));
-            OptimizationLog.Write(
-                $"power backup saved: AC={backup.Ac.Count} DC={backup.Dc.Count} -> {BackupPath}");
             return true;
         }
         catch (Exception ex)
@@ -398,7 +384,6 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         var status = PowerGetActiveScheme(IntPtr.Zero, out var activePtr);
         if (status != 0 || activePtr == IntPtr.Zero)
         {
-            OptimizationLog.Write($"power get active scheme failed: status={status}");
             return false;
         }
 

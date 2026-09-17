@@ -70,14 +70,12 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
     {
         if (lps.Any(p => p.OsIndex < 0 || p.OsIndex >= lps.Count))
         {
-            TopologyLog.Write($"[TOPOLOGY] os index not dense (count={lps.Count}), skip cpuid cross-check");
             return lps;
         }
 
         var probe = CpuIdTopologyProbe.TryProbe(lps.Count, out var probeReason);
         if (probe is null)
         {
-            TopologyLog.Write($"[TOPOLOGY] cpuid probe unavailable ({probeReason}), keep GLPI grouping");
             return lps;
         }
 
@@ -86,7 +84,6 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
         // 防呆：CPUID 核心数必须能整除线程数（每核线程数均一），否则数据不可信，不贸然改写。
         if (probe.CoreCount <= 0 || lps.Count % probe.CoreCount != 0)
         {
-            TopologyLog.Write($"[TOPOLOGY] cpuid cores={probe.CoreCount} does not divide {lps.Count} threads ({probe.Detail}), keep GLPI grouping");
             return lps;
         }
 
@@ -94,7 +91,6 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
         if (lps.Any(p => p.CoreClass is CoreClass.Performance or CoreClass.Efficiency))
         {
             if (glpiCores != probe.CoreCount)
-                TopologyLog.Write($"[TOPOLOGY] hybrid platform: GLPI={glpiCores} cores vs cpuid={probe.CoreCount} ({probe.Detail}); keep GLPI");
             return lps;
         }
 
@@ -103,9 +99,6 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
 
         // 物理核数不一致 → 以 CPUID 归并为准重建（既覆盖固件虚报 SMT：N 核 1 线程被报成 N/2 核 × 2，
         // 也覆盖反向误报：SMT 对被拆成单线程核）。线程条 / 热力图行数不变（= 逻辑处理器数）。
-        TopologyLog.Write(
-            $"[TOPOLOGY] firmware topology mismatch: GLPI={glpiCores} cores / {lps.Count} threads, "
-            + $"cpuid={probe.CoreCount} cores / tpc={probe.ThreadsPerCore}; rebuilding from CPUID");
 
         var coreIndexOf = new Dictionary<int, int>();
         var rebuilt = new List<LogicalProcessorTopology>(lps.Count);

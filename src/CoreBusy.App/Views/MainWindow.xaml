@@ -1,4 +1,4 @@
-﻿<Window x:Class="CoreBusy.App.Views.MainWindow"
+<Window x:Class="CoreBusy.App.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CoreBusy.App.Controls"
@@ -83,8 +83,8 @@
                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                           VerticalAlignment="Center" />
                 </Button>
-                <Button Style="{StaticResource IconButtonStyle}" Margin="0,0,10,0" Click="OnOpenLogFolder"
-                        ToolTip="打开运行日志文件夹">
+                <Button Style="{StaticResource IconButtonStyle}" Margin="0,0,10,0" Click="OnOpenDataFolder"
+                        ToolTip="打开数据文件夹（配置与历史记录）">
                     <Path Data="{StaticResource IconMore}" Stretch="Uniform" Width="13" Height="13"
                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                           VerticalAlignment="Center" />

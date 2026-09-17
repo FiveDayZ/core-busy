@@ -27,9 +27,8 @@ public static class SettingsStore
                     return settings;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"settings load failed: {ex.Message}");
         }
 
         return new AppSettings();
@@ -42,9 +41,8 @@ public static class SettingsStore
             Directory.CreateDirectory(DirectoryPath);
             File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, JsonOptions));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"settings save failed: {ex.Message}");
         }
     }
 }

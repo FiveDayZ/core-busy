@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Security.Principal;
 using LibreHardwareMonitor.Hardware;
+using CoreBusy.Core.Energy;
 using CoreBusy.Core.Interfaces;
 using CoreBusy.Core.Models;
 
@@ -29,92 +30,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         };
     }
 
-    public void Start()
-    {
-        _computer.Open();
-
-        // 取证（v1.16.1）：一次性落盘「内核驱动状态 + CPU 温度/功耗传感器原始读数」。
-        // 非提权时 LHM 拿不到 Ring0，AMD 的 SMU 读数会被填成 0（**不是 null**），
-        // 界面上只剩一个"-"/"0 W"，看不出"为什么读不到"。日志要能直接回答这个问题。
-        try
-        {
-            SensorLog.Write($"[SENSOR] 内核访问：{ProbeKernelAccess().Detail}");
-            LogCpuSensorInventory();
-            LogStorageSensorInventory();
-        }
-        catch (Exception ex)
-        {
-            SensorLog.Write($"[SENSOR] 自检失败（不影响采集）：{ex.GetType().Name}: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 一次性打印 **CPU 的全部传感器**（v1.16.1 起只打印温度/功耗，v1.18.0 补齐）。
-    /// <para>
-    /// 为什么必须打全：v1.17.x 排查"8 颗核频率全是 4.52 GHz"时，日志里**没有一行 Clock**，
-    /// 于是"日志没有 Clock 行"被误读成"LHM 没有时钟传感器"，白跑了两轮实测。
-    /// 事实是本机有 19 个 Clock 传感器（含每核的 <c>Core #N</c> 与 <c>Core #N (Effective)</c>）
-    /// 与 10 个 Voltage 传感器 —— 只打印两个类型就等于把这部分可观测性藏起来了。
-    /// 这条日志只写一次，多几十行的代价换来的是"以后不必再猜"。
-    /// </para>
-    /// </summary>
-    private void LogCpuSensorInventory()
-    {
-        foreach (var hardware in _computer.Hardware)
-        {
-            if (hardware.HardwareType != HardwareType.Cpu)
-                continue;
-
-            hardware.Update();
-            SensorLog.Write($"[SENSOR] CPU 传感器清单：{hardware.Name}");
-            foreach (var sensor in hardware.Sensors)
-            {
-                SensorLog.Write($"[SENSOR]   {sensor.SensorType} | {sensor.Name} = {sensor.Value?.ToString("0.##") ?? "null"}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// 一次性打印每块盘的**全部**温度传感器原始读数与被采用值（v1.16.2）。
-    /// </summary>
-    /// <remarks>
-    /// 盘温这个字段踩过的坑说明"只写结果"不够：同一块盘上同时存在真实读数与阈值读数，
-    /// 只有把原始清单摊开，"采用 46 而不是 87"才可复核，下次再出现离谱数字也能一眼定位是
-    /// 哪块盘、哪个传感器名。同 v1.16.1 的 CPU 取证：降级/取舍路径必须带出真实原因。
-    /// </remarks>
-    private void LogStorageSensorInventory()
-    {
-        foreach (var hardware in _computer.Hardware)
-        {
-            if (hardware.HardwareType != HardwareType.Storage)
-                continue;
-
-            try
-            {
-                hardware.Update();
-            }
-            catch (Exception ex)
-            {
-                SensorLog.Write($"[STORAGE] {hardware.Name}：读取失败（{ex.GetType().Name}）");
-                continue;
-            }
-
-            var adopted = SelectDriveTemperature(hardware.Sensors);
-            var raw = new List<string>();
-            foreach (var sensor in hardware.Sensors)
-            {
-                if (sensor.SensorType != SensorType.Temperature)
-                    continue;
-
-                var note = IsThresholdSensorName(sensor.Name) ? "（阈值，不计）" : string.Empty;
-                raw.Add($"{sensor.Name}={sensor.Value?.ToString("0.##") ?? "null"}{note}");
-            }
-
-            var rawText = raw.Count > 0 ? string.Join("，", raw) : "无温度传感器";
-            var adoptedText = adopted?.ToString("0.##") ?? "无可用读数";
-            SensorLog.Write($"[STORAGE] {hardware.Name}：采用 {adoptedText} ℃ | 原始：{rawText}");
-        }
-    }
+    public void Start() => _computer.Open();
 
     /// <summary>
     /// 探测内核驱动（PawnIO）可用性（v1.16.1）。CPU 温度/功耗、SuperIO 风扇转速与硬盘 SMART
@@ -278,11 +194,8 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         double? firstTemp = null;
         double? packagePower = null;
         double? fanRpm = null;
+        var activeFanCount = 0;
 
-        // 被有效性守卫丢弃的原始读数（v1.16.1）：不留证据的话，
-        // "读不到"与"读到了 0"在事后无法区分。
-        double? rawTemp = null;
-        double? rawPower = null;
         var clocks = new Dictionary<int, double>();
         var effectiveClocks = new Dictionary<int, double>();
         var voltages = new Dictionary<int, double>();
@@ -294,12 +207,12 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                 if (hardware.HardwareType == HardwareType.Cpu)
                 {
                     ReadCpuSensors(hardware, ref packageTemp, ref maxCoreTemp, ref firstTemp,
-                                   ref packagePower, ref rawTemp, ref rawPower,
+                                   ref packagePower,
                                    clocks, effectiveClocks, voltages);
                 }
                 else if (hardware.HardwareType == HardwareType.Motherboard)
                 {
-                    ReadFanSensor(hardware, ref fanRpm);
+                    activeFanCount = ReadFanSensor(hardware, ref fanRpm);
                 }
             }
         }
@@ -308,13 +221,13 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             // 单次采样失败按空快照处理，避免监控线程崩溃；UI 沿用上次值/显示缺省。
         }
 
-        // GPU / 硬盘温度（v1.16.0 状态栏扩展）：GPU 每帧读（NVML/nvapi 开销小），
-        // 硬盘 SMART 查询较重，按 StorageRefreshSeconds 节流取缓存。
+        // GPU / 存储（v1.16.0 状态栏扩展；v1.20.1 起存储另带活动度供功耗模型使用）：
+        // GPU 每帧读（NVML/nvapi 开销小），硬盘 SMART 查询较重，按 StorageRefreshSeconds
+        // 节流取缓存 —— 活动度与盘温共用同一次刷新，避免两处各自 Update 造成时间基准错位。
         var gpu = ReadGpuSensors();
-        var drives = ReadDriveTemperaturesThrottled();
+        var storage = ReadStorageThrottled();
 
         var adoptedTemp = packageTemp ?? firstTemp;
-        ReportSensorEvidence(adoptedTemp, packagePower, rawTemp, rawPower);
 
         return new HardwareSensorSnapshot
         {
@@ -322,13 +235,18 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             MaxCoreTemperatureC = maxCoreTemp,
             PackagePowerW = packagePower,
             FanRpm = fanRpm,
+            ActiveFanCount = activeFanCount,
             CoreClockMhz = clocks,
             CoreEffectiveClockMhz = effectiveClocks,
             CoreVoltageV = voltages,
             GpuTemperatureC = gpu.TemperatureC,
             GpuUtilizationPercent = gpu.UtilizationPercent,
-            DriveTemperatureC = drives.Count > 0 ? drives.Max(d => d.TemperatureC) : null,
-            DriveTemperatures = drives,
+            DiscreteGpuPowerW = gpu.DiscretePowerW,
+            DiscreteGpuNames = gpu.DiscreteNames,
+            DriveTemperatureC = storage.Temperatures.Count > 0 ? storage.Temperatures.Max(d => d.TemperatureC) : null,
+            DriveTemperatures = storage.Temperatures,
+            StorageThroughputMbps = storage.ThroughputMbps,
+            StorageBusyPercent = storage.BusyPercent,
         };
     }
 
@@ -338,27 +256,38 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
     private const double StorageRefreshSeconds = 15.0;
 
     private readonly Stopwatch _storageClock = Stopwatch.StartNew();
-    private IReadOnlyList<DriveTemperatureReading> _cachedDrives = [];
     private bool _storagePrimed;
 
-    /// <summary>(核心温度℃, 核心占用率%)。</summary>
-    private readonly record struct GpuReading(double? TemperatureC, double? UtilizationPercent);
-
     /// <summary>
-    /// 读主显卡核心温度与占用。多 GPU（核显 + 独显）时按 NVIDIA → AMD → Intel 优先级
-    /// 选主卡，与系统硬件层「独显优先」的状态栏口径对齐；单 GPU 平台不受影响。
+    /// 读显卡读数（v1.20.1）：主卡的温度/占用率 + **全部独显**的实测功率之和与节点名。
+    /// <para>
+    /// <b>独显优先且逐卡判别：</b>多 GPU（核显 + 独显）时主卡取独显 —— 判据与状态栏的显卡排序
+    /// 统一为 <see cref="GpuRatedPower.LooksDiscrete"/>（旧版按厂商加权，遇到"AMD 核显 + AMD 独显"
+    /// 这种同厂商组合会取到核显）。独显名单单独带出，因为核显的功耗已含在 CPU 封装读数里，
+    /// 只能对独显单独计功耗，判错的后果是凭空多算或漏算一二百瓦。
+    /// </para>
+    /// <para>
     /// 温度取名次序：GPU Core → GPU Hot Spot → 首个温度传感器（部分卡只报 Hot Spot）。
+    /// </para>
     /// </summary>
+    /// <summary>读一次显卡时的返回：主卡温度/占用率 + 全部独显功率之和 + 独显节点名。</summary>
+    private readonly record struct GpuReading(
+        double? TemperatureC,
+        double? UtilizationPercent,
+        double? DiscretePowerW,
+        IReadOnlyList<string> DiscreteNames);
+
     private GpuReading ReadGpuSensors()
     {
         try
         {
-            IHardware? primary = null;
-            var primaryRank = 0;
+            GpuNodeReading? mainCard = null;
+            double? discretePower = null;
+            var discreteNames = new List<string>();
 
             foreach (var hardware in _computer.Hardware)
             {
-                var rank = hardware.HardwareType switch
+                var vendorRank = hardware.HardwareType switch
                 {
                     HardwareType.GpuNvidia => 3,
                     HardwareType.GpuAmd => 2,
@@ -366,74 +295,170 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                     _ => 0,
                 };
 
-                if (rank <= 0)
+                if (vendorRank <= 0)
                     continue;
 
-                // 高等级卡覆盖低等级卡；同分取先出现者（枚举顺序稳定）。
-                if (rank > primaryRank || primary is null)
-                {
-                    primary = hardware;
-                    primaryRank = rank;
-                }
-            }
+                // 独显权重（+4）压过任何厂商差：AMD 核显(2) vs AMD 独显(6) 取独显；
+                // 核显之间再按厂商排序。同分取先出现者（枚举顺序稳定）。
+                var name = hardware.Name;
+                var discrete = GpuRatedPower.LooksDiscrete(name);
+                var rank = vendorRank + (discrete ? 4 : 0);
 
-            if (primary is null)
-                return new GpuReading(null, null);
+                hardware.Update();
+                var (temperature, usage, power) = ReadGpuNodeSensors(hardware);
 
-            primary.Update();
+                if (mainCard is null || rank > mainCard.Value.Rank)
+                    mainCard = new GpuNodeReading(rank, temperature, usage);
 
-            double? coreTemp = null;
-            double? hotSpotTemp = null;
-            double? fallbackTemp = null;
-            double? coreUsage = null;
-
-            foreach (var sensor in primary.Sensors)
-            {
-                if (sensor.Value is not { } value)
+                if (!discrete)
                     continue;
 
-                if (sensor.SensorType == SensorType.Temperature)
-                {
-                    // 阈值/极值传感器不是读数（同盘温，v1.16.2）：绝不能让它们充当兜底值。
-                    if (!IsThresholdSensorName(sensor.Name) && IsPlausibleTemperature(value))
-                        fallbackTemp ??= value;
+                discreteNames.Add(name);
 
-                    if (sensor.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
-                        coreTemp = value;
-                    else if (sensor.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase))
-                        hotSpotTemp = value;
-                }
-                else if (sensor.SensorType == SensorType.Load
-                         && sensor.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
-                {
-                    coreUsage ??= value;
-                }
+                // 只做收集（有限、非负、上界已由 IsPlausibleGpuPower 守卫），
+                // "0 W 是真读数还是失效读数"的判定交给功耗模型统一做 —— 那需要占用率，
+                // 而模型层才是"什么算可用读数"的唯一定义处。
+                if (power is { } watt)
+                    discretePower = (discretePower ?? 0) + Math.Max(0, watt);
             }
 
-            return new GpuReading(coreTemp ?? hotSpotTemp ?? fallbackTemp, coreUsage);
+            var main = mainCard;
+            return new GpuReading(main?.TemperatureC, main?.UtilizationPercent, discretePower, discreteNames);
         }
         catch
         {
-            return new GpuReading(null, null);
+            return new GpuReading(null, null, null, []);
         }
     }
 
-    /// <summary>逐块盘的盘温（读不到温度的盘不进列表），按节流间隔刷新缓存。</summary>
-    private IReadOnlyList<DriveTemperatureReading> ReadDriveTemperaturesThrottled()
+    /// <summary>主卡节点（只保留排名、温度、占用率三样，功耗单独按独显名单汇总）。</summary>
+    private readonly record struct GpuNodeReading(int Rank, double? TemperatureC, double? UtilizationPercent);
+
+    /// <summary>读单个 GPU 节点的温度 / 占用率 / 功率。</summary>
+    private static (double? TemperatureC, double? UtilizationPercent, double? PowerW) ReadGpuNodeSensors(
+        IHardware hardware)
+    {
+        double? coreTemp = null;
+        double? hotSpotTemp = null;
+        double? fallbackTemp = null;
+        double? coreUsage = null;
+        double? preferredPower = null;
+        double? anyPower = null;
+
+        foreach (var sensor in hardware.Sensors)
+        {
+            if (sensor.Value is not { } value)
+                continue;
+
+            if (sensor.SensorType == SensorType.Temperature)
+            {
+                // 阈值/极值传感器不是读数（同盘温，v1.16.2）：绝不能让它们充当兜底值。
+                if (!IsThresholdSensorName(sensor.Name) && IsPlausibleTemperature(value))
+                    fallbackTemp ??= value;
+
+                if (sensor.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
+                    coreTemp = value;
+                else if (sensor.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase))
+                    hotSpotTemp = value;
+            }
+            else if (sensor.SensorType == SensorType.Load
+                     && sensor.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
+            {
+                coreUsage ??= value;
+            }
+            else if (sensor.SensorType == SensorType.Power && IsPlausibleGpuPower(value))
+            {
+                // 同一块卡可能有多个功率传感器（整卡 / 核心 / 显存）。整卡口径优先，
+                // 其余取最大值兜底 —— 显存功率是整卡的一部分，取大不会小于真实整卡。
+                if (IsWholeCardPowerSensor(sensor.Name))
+                    preferredPower = Math.Max(preferredPower ?? 0, value);
+                else
+                    anyPower = Math.Max(anyPower ?? 0, value);
+            }
+        }
+
+        return (coreTemp ?? hotSpotTemp ?? fallbackTemp, coreUsage, preferredPower ?? anyPower);
+    }
+
+    /// <summary>是否为"整卡"口径的功率传感器（NVIDIA 用 GPU Package，AMD 用 GPU Core/Board）。</summary>
+    private static bool IsWholeCardPowerSensor(string name)
+        => name.Contains("Package", StringComparison.OrdinalIgnoreCase)
+           || name.Contains("Core", StringComparison.OrdinalIgnoreCase)
+           || name.Contains("Board", StringComparison.OrdinalIgnoreCase)
+           || name.Contains("Total", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 显卡功率读数的有效域（W）。上界与功耗模型的 <c>MaxGpuWatt</c> 取同一量级：
+    /// 越界的值不是"这块卡很费电"，而是单位错误或异常读数，宁可缺席让模型去估。
+    /// <para>
+    /// <b>下界是 0（与 CPU 相反）：</b>CPU 通电必有功耗，所以它的 0 是"读不到"的占位；
+    /// 而独显在 Optimus/运行时 D3 状态下**确实会被下电**，0 W 是真实读数。
+    /// 挡住 0 会让笔记本上那块休眠的独显被型号估算填回一二十瓦 —— 一个只在笔记本上出现、
+    /// 且看起来完全合理的错数（v1.20.1 实测修正）。
+    /// </para>
+    /// </summary>
+    private static bool IsPlausibleGpuPower(double value) => value is >= 0 and <= 1000;
+
+    /// <summary>一次存储刷新得到的全部结果：盘温 + 活动度（吞吐 / 忙率）。</summary>
+    private readonly record struct StorageReading(
+        IReadOnlyList<DriveTemperatureReading> Temperatures,
+        double? ThroughputMbps,
+        double? BusyPercent);
+
+    /// <summary>单块盘本拍的活动度读数。</summary>
+    private readonly record struct DriveActivity(
+        double? ReadRateMbps,
+        double? WriteRateMbps,
+        double? BusyPercent,
+        double DeltaGb,
+        bool CountersChanged);
+
+    private StorageReading _cachedStorage = new([], null, null);
+
+    /// <summary>各盘上一拍的累计读写量（GB），按硬件标识索引（同一型号的两块盘 Name 会相同，标识不会）。</summary>
+    private readonly Dictionary<string, (double ReadGb, double WrittenGb)> _lastDriveCounters = new(StringComparer.Ordinal);
+
+    /// <summary>上一次**观测到累计量变化**的时刻，用于把增量折算成平均带宽。</summary>
+    private DateTime _lastCounterObservedUtc;
+
+    private bool _counterPrimed;
+    private double? _lastThroughputMbps;
+
+    /// <summary>按节流间隔刷新存储读数（盘温与活动度共用一次 Update，保证两者时间基准一致）。</summary>
+    private StorageReading ReadStorageThrottled()
     {
         if (!_storagePrimed || _storageClock.Elapsed.TotalSeconds >= StorageRefreshSeconds)
         {
             _storagePrimed = true;
             _storageClock.Restart();
-            _cachedDrives = ReadDriveTemperatures();
+            _cachedStorage = ReadStorage();
         }
 
-        return _cachedDrives;
+        return _cachedStorage;
     }
 
-    private IReadOnlyList<DriveTemperatureReading> ReadDriveTemperatures()
+    /// <summary>
+    /// 读逐块盘的温度与活动度。
+    /// <para>
+    /// <b>活动度的两个口径（v1.20.1）：</b>优先用 LHM 的 <c>Throughput</c>（Read/Write Rate，MB/s）；
+    /// 本机 NVMe 实测这两个传感器为 null，故退到「累计读写量 <c>Data Read</c>/<c>Data Written</c>
+    /// 差商」—— 累计量是**实测**的，只是需要在两个时刻上相减。
+    /// </para>
+    /// <para>
+    /// <b>差商必须按真实观测间隔算：</b>存储节点 15 s 才 <c>Update()</c> 一次，
+    /// 若每帧都拿"距上次观测 1 秒"去除，会把 15 秒里攒下的写入量算成 15 倍带宽
+    /// （本机实测可达 GB/s 级），于是整机功耗里凭空多出一个满载硬盘。
+    /// 故只在累计量**真的变化**时结算一次，并记下该时刻。
+    /// </para>
+    /// </summary>
+    private StorageReading ReadStorage()
     {
-        var result = new List<DriveTemperatureReading>();
+        var temperatures = new List<DriveTemperatureReading>();
+        double? busyMax = null;
+        double? rateMax = null;
+        var deltas = new List<double>();
+        var countersChanged = false;
+        var now = DateTime.UtcNow;
 
         try
         {
@@ -452,7 +477,26 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                 }
 
                 if (SelectDriveTemperature(hardware.Sensors) is { } value)
-                    result.Add(new DriveTemperatureReading { Name = hardware.Name, TemperatureC = value });
+                    temperatures.Add(new DriveTemperatureReading { Name = hardware.Name, TemperatureC = value });
+
+                var activity = ReadDriveActivity(hardware.Sensors, hardware.Identifier.ToString());
+
+                if (activity.BusyPercent is { } busy)
+                    busyMax = Math.Max(busyMax ?? double.MinValue, busy);
+
+                // 吞吐口径：只要该盘给了 Read/Write Rate 就用它（缺失的一侧按 0 计），
+                // 取全机最忙那块盘作为整机存储项的驱动量。
+                if (activity.ReadRateMbps is not null || activity.WriteRateMbps is not null)
+                {
+                    var perDriveRate = (activity.ReadRateMbps ?? 0) + (activity.WriteRateMbps ?? 0);
+                    rateMax = Math.Max(rateMax ?? double.MinValue, perDriveRate);
+                }
+
+                if (activity.CountersChanged)
+                {
+                    countersChanged = true;
+                    deltas.Add(activity.DeltaGb);
+                }
             }
         }
         catch
@@ -460,8 +504,128 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             // 整轮枚举失败：返回已拿到的部分，不吞掉已有读数。
         }
 
-        return result;
+        if (rateMax is not null)
+        {
+            _lastThroughputMbps = rateMax;
+        }
+        else if (countersChanged)
+        {
+            var seconds = _counterPrimed ? (now - _lastCounterObservedUtc).TotalSeconds : 0;
+            _lastCounterObservedUtc = now;
+            _counterPrimed = true;
+
+            if (seconds > 0.5 && deltas.Count > 0)
+            {
+                // 取"最忙那块盘"的增量：无法把总吞吐归因到单块盘时，
+                // 用最忙的那块驱动功耗摆幅，比按全部盘求和更保守。
+                _lastThroughputMbps = deltas.Max() * 1024.0 / seconds;
+            }
+        }
+
+        return new StorageReading(temperatures, _lastThroughputMbps, busyMax);
     }
+
+    /// <summary>
+    /// 单块盘的活动度。
+    /// <para>
+    /// <b>刻意不采信 <c>Total Activity</c>：</b>本机实测该传感器在 <c>Read Activity</c>、
+    /// <c>Write Activity</c> 都 ≈ 0（盘空闲）时仍报告 99.999985（见 .workbuddy/lhm_dump_v1200.txt），
+    /// 用它会把一块常年空闲的盘算成永久满载 +8 W。忙率只取读写两个分项的大者。
+    /// </para>
+    /// </summary>
+    private DriveActivity ReadDriveActivity(IReadOnlyList<ISensor> sensors, string driveId)
+    {
+        double? readRate = null;
+        double? writeRate = null;
+        double? readBusy = null;
+        double? writeBusy = null;
+        var readGb = 0.0;
+        var writtenGb = 0.0;
+        var hasRead = false;
+        var hasWritten = false;
+
+        foreach (var sensor in sensors)
+        {
+            if (sensor.Value is not { } value)
+                continue;
+
+            switch (sensor.SensorType)
+            {
+                // LHM 的存储 Throughput 传感器单位是 **bytes/s**，不是它名义上的 MB/s。
+                // v1.21.0 用可控写入负载标定（.workbuddy/storageprobe：640 MB × Flush(true)）：
+                // 真实平均写入 211.6 MB/s 时，同一时刻传感器报 222,387,872 —— 相差 10^6。
+                // 直接当 MB/s 采信的后果不是"数字大一点"：一条空闲盘的 0.26 MB/s 会变成
+                // 269,535 MB/s，落进模型层 [0, 100000] 的合理域**之内**（或恰好越界），
+                // 于是 `StorageActivityRatio` 被 clamp 到 1.0、硬盘项按满载 +6.8 W 计 ——
+                // 一个随字节速率随机出现、只看界面完全看不出来的偏差。
+                case SensorType.Throughput when sensor.Name.StartsWith("Read", StringComparison.OrdinalIgnoreCase):
+                    readRate = ToMegabytesPerSecond(value);
+                    break;
+
+                case SensorType.Throughput when sensor.Name.StartsWith("Write", StringComparison.OrdinalIgnoreCase):
+                    writeRate = ToMegabytesPerSecond(value);
+                    break;
+
+                case SensorType.Load when sensor.Name.StartsWith("Read", StringComparison.OrdinalIgnoreCase):
+                    readBusy = value;
+                    break;
+
+                case SensorType.Load when sensor.Name.StartsWith("Write", StringComparison.OrdinalIgnoreCase):
+                    writeBusy = value;
+                    break;
+
+                // 累计量口径：单位是 **GB 且为整数粒度**（v1.21.0 实测：连续写入 640 MB 只让
+                // Data Written 从 539 跳到 540）。因此差商路径只有在"刚好跨过一个 GB 边界"时
+                // 才拿得到值，其余时刻恒为 0 —— 它只是 Throughput 传感器不可用时的兜底，
+                // 不是主口径。差值仍按 ×1024 折算成 MB（GB → MiB 是 1024，与 GB 的定义一致）。
+                case SensorType.Data when sensor.Name.Equals("Data Read", StringComparison.OrdinalIgnoreCase):
+                    readGb = value;
+                    hasRead = true;
+                    break;
+
+                case SensorType.Data when sensor.Name.Equals("Data Written", StringComparison.OrdinalIgnoreCase):
+                    writtenGb = value;
+                    hasWritten = true;
+                    break;
+            }
+        }
+
+        var changed = false;
+        var deltaGb = 0.0;
+
+        if (hasRead || hasWritten)
+        {
+            if (_lastDriveCounters.TryGetValue(driveId, out var previous))
+            {
+                var deltaRead = Math.Max(0, readGb - previous.ReadGb);
+                var deltaWritten = Math.Max(0, writtenGb - previous.WrittenGb);
+                deltaGb = deltaRead + deltaWritten;
+                changed = deltaGb > 0;
+            }
+
+            _lastDriveCounters[driveId] = (readGb, writtenGb);
+        }
+
+        double? busyPercent = null;
+        if (readBusy is not null || writeBusy is not null)
+            busyPercent = Math.Clamp(Math.Max(readBusy ?? 0, writeBusy ?? 0), 0, 100);
+
+        return new DriveActivity(readRate, writeRate, busyPercent, deltaGb, changed);
+    }
+
+    /// <summary>
+    /// LHM 存储 Throughput 传感器的原始值 → MB/s。
+    /// <para>
+    /// 该传感器名义上是 MB/s，实测是 <b>bytes/s</b>：v1.21.0 用可控写入负载标定
+    /// （<c>.workbuddy/storageprobe</c>，640 MB 分片 <c>Flush(true)</c> 落盘），
+    /// 真实平均 211.6 MB/s 时传感器读到 222,387,872，比值 ≈ 1.05×10^6。
+    /// </para>
+    /// <para>
+    /// 单位错必须在这里修掉，不能留给模型层的"合理域"闸：闸门对 10^6 的量级错误只是
+    /// 偶发有效（<c>269535</c> 越界被丢，<c>86968</c> 却落在闸内被采信）。
+    /// </para>
+    /// </summary>
+    private static double ToMegabytesPerSecond(double bytesPerSecond) => bytesPerSecond / (1024.0 * 1024.0);
 
     /// <summary>
     /// 单块盘的盘温（℃）。优先级：<c>Composite Temperature</c> → <c>Temperature</c> →
@@ -537,47 +701,12 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
     /// <summary>温度有效域（℃）：0 与超范围值不是读数，是"拿不到读数"的占位。</summary>
     private static bool IsPlausibleTemperature(double value) => value is > 0 and < 150;
 
-    /// <summary>
-    /// 温度/功耗可用性取证（v1.16.1）。**只在状态翻转时写一行**：
-    /// 读数本身每秒都变，逐帧写会把 debug.log 淹掉；而"能不能读"在会话内只在很有限的
-    /// 几个时刻变化（驱动被拒 / 提权 / 恢复），恰是需要留痕的那几次。
-    /// </summary>
-    private void ReportSensorEvidence(double? temp, double? power, double? rawTemp, double? rawPower)
-    {
-        var state = (Temp: temp is not null, Power: power is not null);
-        if (_lastSensorState == state)
-            return;
-
-        _lastSensorState = state;
-
-        if (state.Temp && state.Power)
-        {
-            SensorLog.Write($"[SENSOR] 温度/功耗已可读：{temp:0.#} ℃ / {power:0.#} W");
-            return;
-        }
-
-        // 原始读数必须一并带出：AMD 在没有内核驱动时把 SMU 读数填 0 而非 null，
-        // 只看"读到 0"极易误判成"这台机器真的只耗 0 W"。
-        var raw = $"原始读数 温度={Format(rawTemp)} 功耗={Format(rawPower)}";
-        var why = ProbeKernelAccess().Detail;
-        SensorLog.Write(
-            $"[SENSOR] 温度{(temp is null ? "不可用" : "可读")}、功耗{(power is null ? "不可用" : "可读")}"
-            + $"（{raw}）；原因：{why}");
-    }
-
-    private static string Format(double? value) => value?.ToString("0.##") ?? "无该传感器";
-
-    /// <summary>上次的温度/功耗可用性（null = 尚未采样过）。</summary>
-    private (bool Temp, bool Power)? _lastSensorState;
-
     private static void ReadCpuSensors(
         IHardware hardware,
         ref double? packageTemp,
         ref double? maxCoreTemp,
         ref double? firstTemp,
         ref double? packagePower,
-        ref double? rawTemp,
-        ref double? rawPower,
         Dictionary<int, double> clocks,
         Dictionary<int, double> effectiveClocks,
         Dictionary<int, double> voltages)
@@ -595,10 +724,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                     // 非提权时 AMD 的 "Core (Tctl/Tdie)" 读数是 0（不是 null），
                     // 放它过去就会变成"这颗 CPU 0 ℃"。守卫在此，不在下游。
                     if (!IsPlausibleTemperature(sensor.Value.Value))
-                    {
-                        rawTemp ??= sensor.Value;
                         break;
-                    }
 
                     firstTemp ??= sensor.Value;
                     if (sensor.Name is "CPU Package" or "Core (Tctl/Tdie)" or "Core (Tctl)" or "CPU (Tctl/Socket)")
@@ -614,8 +740,6 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                     // 功耗 0 W 不是读数：CPU 通电就必然有功耗。同温度，守卫在源头。
                     if (sensor.Value.Value > 0)
                         packagePower = sensor.Value;
-                    else
-                        rawPower ??= sensor.Value;
                     break;
 
                 case SensorType.Clock:
@@ -700,44 +824,59 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
     /// <summary>逐核电压有效域（V）：低于 0.3 或高于 2.0 都不是可用的核心电压读数。</summary>
     private static bool IsPlausibleCoreVoltage(double value) => value is > 0.3 and < 2.0;
 
-    private static void ReadFanSensor(IHardware hardware, ref double? fanRpm)
+    /// <summary>
+    /// 读风扇转速（优先取 CPU 风扇）并返回**转动中**的风扇数量（v1.20.1）。
+    /// <para>
+    /// 计数与取值用同一个合理域守卫：空风扇接口常报 0（本机 5 个接口只有 1 个在转），
+    /// 少数主板对空接口会报一个恒定的噪声值，故 <see cref="IsPlausibleFanRpm"/> 上下都设界。
+    /// 整机功耗模型用这个**个数**（每风扇按常数计），不用转速反推功率 ——
+    /// 风扇的 P–Q 曲线随型号差异太大，用转速换算比取常数更不准。
+    /// </para>
+    /// </summary>
+    private static int ReadFanSensor(IHardware hardware, ref double? fanRpm)
     {
         hardware.Update();
 
-        foreach (var sensor in hardware.Sensors)
-        {
-            if (sensor.SensorType != SensorType.Fan || sensor.Value is not { } rpm || rpm <= 0)
-                continue;
-
-            // 优先取 CPU 风扇；否则记录第一个风扇兜底。
-            if (sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase))
-            {
-                fanRpm = rpm;
-                return;
-            }
-
-            fanRpm ??= rpm;
-        }
+        var count = CountActiveFans(hardware, ref fanRpm);
 
         // SuperIO 传感器挂在主板子硬件上，逐层查找。
         foreach (var sub in hardware.SubHardware)
         {
             sub.Update();
-            foreach (var sensor in sub.Sensors)
-            {
-                if (sensor.SensorType != SensorType.Fan || sensor.Value is not { } rpm || rpm <= 0)
-                    continue;
-
-                if (sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase))
-                {
-                    fanRpm = rpm;
-                    return;
-                }
-
-                fanRpm ??= rpm;
-            }
+            count += CountActiveFans(sub, ref fanRpm);
         }
+
+        return count;
     }
+
+    /// <summary>数一层硬件上"转速可信"的风扇，并顺带确定要显示的那一个（CPU 风扇优先）。</summary>
+    private static int CountActiveFans(IHardware hardware, ref double? fanRpm)
+    {
+        var count = 0;
+
+        foreach (var sensor in hardware.Sensors)
+        {
+            if (sensor.SensorType != SensorType.Fan || sensor.Value is not { } rpm)
+                continue;
+
+            if (!IsPlausibleFanRpm(rpm))
+                continue;
+
+            count++;
+
+            // 优先 CPU 风扇；否则保留第一个可信读数（不覆盖，避免后出现的机箱风扇顶掉 CPU 风扇）。
+            if (sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase) || fanRpm is null)
+                fanRpm = rpm;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// 风扇转速的有效域（RPM）。下界 200：更低的值不是"风扇在慢转"，而是空接口的噪声读数；
+    /// 上界 5000：机箱/散热器风扇的实际上限，超过它只能是传感器标定错误。
+    /// </summary>
+    private static bool IsPlausibleFanRpm(double rpm) => rpm is >= 200 and <= 5000;
 
     public void Dispose() => _computer.Close();
 }

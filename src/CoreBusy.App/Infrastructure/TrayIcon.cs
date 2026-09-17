@@ -100,12 +100,10 @@ internal sealed class TrayIcon : IDisposable
         try
         {
             _iconAdded = Shell_NotifyIconW(NimAdd, ref _data);
-            AppLog.Write($"tray icon add: ok={_iconAdded} id={_id} hicon=0x{_hIcon.ToInt64():X}");
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             _iconAdded = false;
-            AppLog.Write($"tray icon add FAILED: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -136,9 +134,8 @@ internal sealed class TrayIcon : IDisposable
         {
             return Shell_NotifyIconW(NimModify, ref data);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"tray balloon FAILED: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }
@@ -185,9 +182,8 @@ internal sealed class TrayIcon : IDisposable
             menu.Placement = PlacementMode.MousePoint;
             menu.IsOpen = true;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"tray menu FAILED: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -215,12 +211,10 @@ internal sealed class TrayIcon : IDisposable
                 }
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"tray icon extract FAILED: {ex.GetType().Name}: {ex.Message}");
         }
 
-        AppLog.Write("tray icon fallback: 使用系统通用图标（exe 图标资源不可用）");
         try
         {
             return LoadIconW(IntPtr.Zero, new IntPtr(IdiApplication));

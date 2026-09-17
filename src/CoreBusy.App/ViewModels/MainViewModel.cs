@@ -285,7 +285,6 @@ public sealed class MainViewModel : ObservableObject
         SettingsStore.Save(_settings);
         OnPropertyChanged(nameof(IntervalMilliseconds));
         StatusText = $"采样中（{IntervalMilliseconds}ms）" + (SensorHintVisibility ? "｜温度/功耗需以管理员身份运行" : string.Empty);
-        AppLog.Write($"settings applied: interval={settings.IntervalMilliseconds} sensors={settings.SensorsEnabled} game={settings.GameDetectionEnabled}");
 
         if (_settings.SensorsEnabled && !_sensorStarted)
             _ = StartSensorAsync();
@@ -351,15 +350,10 @@ public sealed class MainViewModel : ObservableObject
                     if (_statsByCore.ContainsKey(coreIndex))
                         _statsByCore[coreIndex] = entry;
                 }
-
-                if (savedStats.Count > 0)
-                    AppLog.Write($"daily stats restored: {savedStats.Count} cores from {DateTime.Today:yyyy-MM-dd}");
             }
 
             if (_settings.SensorsEnabled)
                 await StartSensorAsync();
-            else
-                AppLog.Write("sensors disabled by settings");
 
             if (PackageTemperatureC is null && PackagePowerW is null)
                 ReadSensorSnapshot();
@@ -388,7 +382,6 @@ public sealed class MainViewModel : ObservableObject
                 _statsDate = DateTime.Today;
                 foreach (var coreIndex in _statsByCore.Keys.ToList())
                     _statsByCore[coreIndex] = new CoreStatEntry();
-                AppLog.Write("daily stats reset (date changed)");
             }
 
             var usages = _usageProvider.SampleAll();
@@ -478,7 +471,6 @@ public sealed class MainViewModel : ObservableObject
 
         var othersAvg = othersCount > 0 ? othersSum / othersCount : 0;
         if (_sampleCount % 5 == 0)
-            AppLog.Write($"bottleneck-check: max={maxUsage:0.0} othersAvg={othersAvg:0.0} streak={_bottleneckStreak} has={HasBottleneck}");
         if (maxTile is not null && maxUsage >= 80 && othersAvg <= 30)
         {
             _bottleneckStreak++;
@@ -486,7 +478,6 @@ public sealed class MainViewModel : ObservableObject
             {
                 BottleneckText = $"疑似单核心瓶颈：{maxTile.DisplayName} {maxUsage:0}%（其余核心平均 {othersAvg:0}%）";
                 HasBottleneck = true;
-                AppLog.Write($"bottleneck detected: {BottleneckText}");
             }
             else if (HasBottleneck)
             {
@@ -501,7 +492,6 @@ public sealed class MainViewModel : ObservableObject
             {
                 HasBottleneck = false;
                 BottleneckText = string.Empty;
-                AppLog.Write("bottleneck cleared");
             }
         }
     }
@@ -613,7 +603,6 @@ public sealed class MainViewModel : ObservableObject
             _lastGame = null;
             if (_activeGame is null)
             {
-                AppLog.Write($"game session started: {game}");
                 _activeGame = new GameSession(game);
                 HasGameSession = true;
             }
@@ -684,7 +673,6 @@ public sealed class MainViewModel : ObservableObject
         };
         var reportPath = GameReportStore.Save(report);
 
-        AppLog.Write($"game session ended: {session.Name} elapsed={session.ElapsedText} report={reportPath ?? "save failed"}");
         var tempText = session.MaxTemperatureC is double mt ? $"{mt:0}℃" : "-";
         GameSessionText =
             $"上次游戏 {session.Name}｜时长 {session.ElapsedText}｜CPU 平均 {cpuAvg:0.0}%｜最高核心 {session.MaxCoreName ?? "-"} {session.MaxCoreUsage:0}%｜最高温度 {tempText}";

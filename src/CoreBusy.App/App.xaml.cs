@@ -32,26 +32,6 @@ public partial class App : Application
         // 同时规避远程/沙箱会话的黑屏问题）。详见 ApplyRenderMode 的注释与实测表。
         ApplyRenderMode();
 
-        AppLog.Write($"startup pid={Environment.ProcessId} version={typeof(App).Assembly.GetName().Version} elevated={new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)}");
-
-        // 拓扑取证日志接线：CPUID 交叉校验（CoreBusy.Windows 层）经此写入 logs/debug.log。
-        TopologyLog.Sink = AppLog.Write;
-
-        // 优化模块日志接线（v1.12.0）：电源策略与规则套用的取证行同样进 logs/debug.log。
-        OptimizationLog.Sink = AppLog.Write;
-
-        // 传感器层日志接线（v1.16.1）：内核驱动状态、CPU 传感器清单、温度/功耗可用性变化
-        // 都经此写入 logs/debug.log（含"没提权"这类降级原因，见 ProbeKernelAccess）。
-        SensorLog.Sink = AppLog.Write;
-
-        // WMI 通道日志接线（v1.16.3）：ASUS 风扇回退（AsusAtkWmi_WMNB.DSTS）的读数与失败原因
-        // 走这里落盘 —— 笔记本风扇是唯一一条绕开 LHM 的采集路径，取证口径必须同样完整。
-        WmiLog.Sink = AppLog.Write;
-
-        // 健康度取证（v1.17.0）：评分依据（各分项、峰值、参照、基线、样本数）与 WHEA 计数
-        // 都走这里落盘。这一块输出的是**推导值**，没有中间量就无法复核。
-        HealthLog.Sink = AppLog.Write;
-
         // 载入用户设置（规范 §6/§7）：主题模式与核心分区口径需在窗口构建前决定。
         var settings = SettingsStore.Load();
 
@@ -71,7 +51,6 @@ public partial class App : Application
         // 品牌主题：Auto 按 CPU 厂商（Intel/AMD/未知→Neutral），也可手动锁定；
         // 必须在主窗口构建前应用（StaticResource 解析时机）。
         BrandTheme.Apply(monitor.GetCpuInfo().Vendor, settings.Theme);
-        AppLog.Write($"theme={BrandTheme.ThemeName} edition={BrandTheme.EditionText} coreLayout={settings.CoreLayout}");
 
         // 整机硬件状态（内存/显卡/系统盘）：供状态栏展示，采集失败不影响主链路。
         // CPU 核心优化（v1.12.0）：进程调度 + 电源策略 + 游戏检测，三项相互独立，
@@ -85,11 +64,9 @@ public partial class App : Application
             sensorAccess,
             CreateWheaSource(monitor));
         var window = new MainWindow(viewModel);
-        window.Closed += (_, _) => AppLog.Write("mainwindow closed");
 
         MainWindow = window;
         window.Show();
-        AppLog.Write("dashboard initialize completed");
     }
 
     /// <summary>
@@ -122,8 +99,6 @@ public partial class App : Application
         var software = forced != "0";
 
         RenderOptions.ProcessRenderMode = software ? RenderMode.SoftwareOnly : RenderMode.Default;
-        AppLog.Write(
-            $"render mode: {(software ? "SoftwareOnly" : "Hardware")} remoteSession={GetSystemMetrics(SmRemoteSession) != 0} override={forced ?? "default"}");
     }
 
     private const int SmRemoteSession = 0x1000;
@@ -150,19 +125,16 @@ public partial class App : Application
         if (!string.IsNullOrWhiteSpace(mockKey))
         {
             var mock = new MockCpuMonitorService(settings.CoreLayout, mockKey);
-            AppLog.Write($"debug cpu profile active: {mock.ProfileKey} | {mock.GetCpuInfo()}");
             return mock;
         }
 
         try
         {
             var monitor = new WindowsCpuMonitorService(new LibreHardwareMonitorSensorService(), settings.CoreLayout);
-            AppLog.Write($"real cpu monitor ready: {monitor.GetCpuInfo()} elevated={elevated}");
             return monitor;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"real cpu monitor init FAILED, fallback to mock. elevated={elevated} {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             return new MockCpuMonitorService(settings.CoreLayout);
         }
     }
@@ -177,9 +149,8 @@ public partial class App : Application
         {
             return new WindowsSystemHardwareService();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"system hardware service init FAILED: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -193,12 +164,10 @@ public partial class App : Application
         try
         {
             var service = new WindowsCpuOptimizationService();
-            AppLog.Write($"[OPT] scheduling ready supported={service.IsSupported} {service.StatusDetail}");
             return service;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[OPT] scheduling init FAILED: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -213,13 +182,10 @@ public partial class App : Application
         {
             var service = new WindowsPowerPolicyService();
             var state = service.Read();
-            AppLog.Write(
-                $"[OPT] power policy ready available={state.Available} backup={state.BackupAvailable} {state.Detail}");
             return service;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[OPT] power policy init FAILED: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -231,9 +197,8 @@ public partial class App : Application
         {
             return new FullscreenGameDetector();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[OPT] game detector init FAILED: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -243,18 +208,15 @@ public partial class App : Application
         // 用 ToString() 而不是 Message + StackTrace：XamlParseException 这类
         // 包装异常的内层（真正缺哪个资源、哪一行）只在 InnerException 链里，
         // 只记外层会把取证最关键的信息丢掉（v1.15.0 BoolToVis 前向引用实测教训）。
-        AppLog.Write($"DISPATCHER UNHANDLED: {e.Exception}");
         e.Handled = true;
     }
 
     private void OnAppDomainUnhandledException(object? sender, UnhandledExceptionEventArgs e)
     {
-        AppLog.Write($"APPDOMAIN UNHANDLED: {e.ExceptionObject}");
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        AppLog.Write($"exit code={e.ApplicationExitCode}");
         base.OnExit(e);
     }
 }

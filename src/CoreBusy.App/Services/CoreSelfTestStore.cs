@@ -70,7 +70,6 @@ public static class CoreSelfTestStore
                 return result;
 
             if (file.Version != CurrentVersion)
-                AppLog.Write($"[SELFTEST] 档案版本 {file.Version} ≠ {CurrentVersion}，按当前口径尽力读取");
 
             foreach (var pair in file.Cores)
             {
@@ -82,9 +81,8 @@ public static class CoreSelfTestStore
 
             return result;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[SELFTEST] 档案读取失败：{ex.Message}");
             return result;
         }
     }
@@ -167,9 +165,8 @@ public static class CoreSelfTestStore
 
             File.WriteAllText(FilePath, JsonSerializer.Serialize(file, JsonOptions));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"[SELFTEST] 档案保存失败：{ex.Message}");
         }
     }
 

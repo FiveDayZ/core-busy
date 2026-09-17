@@ -37,9 +37,8 @@ public static class StatsStore
 
             return JsonSerializer.Deserialize<Dictionary<int, CoreStatEntry>>(File.ReadAllText(path));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"stats load failed: {ex.Message}");
             return null;
         }
     }
@@ -51,9 +50,8 @@ public static class StatsStore
             Directory.CreateDirectory(DirectoryPath);
             File.WriteAllText(FilePath(DateTime.Today), JsonSerializer.Serialize(stats, JsonOptions));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            AppLog.Write($"stats save failed: {ex.Message}");
         }
     }
 }
