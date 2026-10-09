@@ -34,6 +34,14 @@ public sealed class DashboardCoreVm : ObservableObject
         Id = id;
         IsCompact = isCompact;
 
+        // 阶段变色（v1.27.2）：等级跨过阶段阈值时，封装边框随成长阶段逐级点亮
+        // （高负载红框优先级更高，见 ApplyBorder）。
+        Level.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(CoreLevelVm.Level))
+                ApplyBorder();
+        };
+
         // 仅当核心含 ≥2 条线程（SMT）时才在 Tile 内展开线程明细：
         // 单线程核的"线程"就是核心本身，再画一条等于重复。
         if (threads is { Count: > 1 })
@@ -277,7 +285,16 @@ public sealed class DashboardCoreVm : ObservableObject
             return;
 
         IsHighLoad = high;
-        TileBorderBrush = high ? UiTheme.TileDangerBorderBrush : UiTheme.TileBorderBrush;
         TileBackground = high ? UiTheme.TileDangerCardBrush : UiTheme.TileCardBrush;
+        ApplyBorder();
     }
+
+    /// <summary>
+    /// 封装边框（v1.27.2）：高负载红框**最高优先**（告警语义不能被成长装饰淹没）；
+    /// 其余时候按成长阶段逐级点亮 —— 让"养到哪个阶段"在主板上一眼可辨。
+    /// </summary>
+    private void ApplyBorder()
+        => TileBorderBrush = IsHighLoad
+            ? UiTheme.TileDangerBorderBrush
+            : UiTheme.StageBorderFor(Level.Level);
 }

@@ -168,7 +168,8 @@ public static class BrandTheme
             tileCard: CardHex,
             tileBorder: BorderWeakHex,
             tileDangerCard: "#33262A",
-            tileDangerBorder: DangerHex);
+            tileDangerBorder: DangerHex,
+            accent: accent);
 
         SetHeat(r, HeatRamp);
 

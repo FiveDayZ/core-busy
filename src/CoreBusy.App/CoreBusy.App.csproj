@@ -16,7 +16,7 @@
     <RootNamespace>CoreBusy.App</RootNamespace>
     <AssemblyName>CoreBusy.App</AssemblyName>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>1.27.1</Version>
+    <Version>1.27.2</Version>
     <Product>CORE-BUSY</Product>
     <AssemblyTitle>CORE-BUSY 核忙</AssemblyTitle>
 
