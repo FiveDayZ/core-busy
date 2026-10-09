@@ -1,0 +1,602 @@
+{
+ "unit": "core-minute",
+ "T0": 12.0,
+ "R": 1.1347921802051704,
+ "maxLevel": 99,
+ "minLoadPct": 15.0,
+ "floorFactor": 0.15,
+ "presentFloorPct": 5.0,
+ "targetTotalCoreHours": 357408.0,
+ "totalExp": 21444480.00000022,
+ "totalCoreHours": 357408.00000000367,
+ "steps": [
+  {
+   "level": 2,
+   "step": 12,
+   "cumExp": 12,
+   "cumCoreH": 0.2
+  },
+  {
+   "level": 3,
+   "step": 14,
+   "cumExp": 26,
+   "cumCoreH": 0.4
+  },
+  {
+   "level": 4,
+   "step": 15,
+   "cumExp": 41,
+   "cumCoreH": 0.7
+  },
+  {
+   "level": 5,
+   "step": 18,
+   "cumExp": 59,
+   "cumCoreH": 1.0
+  },
+  {
+   "level": 6,
+   "step": 20,
+   "cumExp": 79,
+   "cumCoreH": 1.3
+  },
+  {
+   "level": 7,
+   "step": 23,
+   "cumExp": 101,
+   "cumCoreH": 1.7
+  },
+  {
+   "level": 8,
+   "step": 26,
+   "cumExp": 127,
+   "cumCoreH": 2.1
+  },
+  {
+   "level": 9,
+   "step": 29,
+   "cumExp": 156,
+   "cumCoreH": 2.6
+  },
+  {
+   "level": 10,
+   "step": 33,
+   "cumExp": 189,
+   "cumCoreH": 3.1
+  },
+  {
+   "level": 11,
+   "step": 37,
+   "cumExp": 226,
+   "cumCoreH": 3.8
+  },
+  {
+   "level": 12,
+   "step": 42,
+   "cumExp": 269,
+   "cumCoreH": 4.5
+  },
+  {
+   "level": 13,
+   "step": 48,
+   "cumExp": 317,
+   "cumCoreH": 5.3
+  },
+  {
+   "level": 14,
+   "step": 55,
+   "cumExp": 372,
+   "cumCoreH": 6.2
+  },
+  {
+   "level": 15,
+   "step": 62,
+   "cumExp": 434,
+   "cumCoreH": 7.2
+  },
+  {
+   "level": 16,
+   "step": 70,
+   "cumExp": 504,
+   "cumCoreH": 8.4
+  },
+  {
+   "level": 17,
+   "step": 80,
+   "cumExp": 584,
+   "cumCoreH": 9.7
+  },
+  {
+   "level": 18,
+   "step": 91,
+   "cumExp": 675,
+   "cumCoreH": 11.2
+  },
+  {
+   "level": 19,
+   "step": 103,
+   "cumExp": 778,
+   "cumCoreH": 13.0
+  },
+  {
+   "level": 20,
+   "step": 117,
+   "cumExp": 895,
+   "cumCoreH": 14.9
+  },
+  {
+   "level": 21,
+   "step": 133,
+   "cumExp": 1027,
+   "cumCoreH": 17.1
+  },
+  {
+   "level": 22,
+   "step": 150,
+   "cumExp": 1178,
+   "cumCoreH": 19.6
+  },
+  {
+   "level": 23,
+   "step": 171,
+   "cumExp": 1349,
+   "cumCoreH": 22.5
+  },
+  {
+   "level": 24,
+   "step": 194,
+   "cumExp": 1542,
+   "cumCoreH": 25.7
+  },
+  {
+   "level": 25,
+   "step": 220,
+   "cumExp": 1762,
+   "cumCoreH": 29.4
+  },
+  {
+   "level": 26,
+   "step": 250,
+   "cumExp": 2012,
+   "cumCoreH": 33.5
+  },
+  {
+   "level": 27,
+   "step": 283,
+   "cumExp": 2295,
+   "cumCoreH": 38.3
+  },
+  {
+   "level": 28,
+   "step": 321,
+   "cumExp": 2617,
+   "cumCoreH": 43.6
+  },
+  {
+   "level": 29,
+   "step": 365,
+   "cumExp": 2981,
+   "cumCoreH": 49.7
+  },
+  {
+   "level": 30,
+   "step": 414,
+   "cumExp": 3395,
+   "cumCoreH": 56.6
+  },
+  {
+   "level": 31,
+   "step": 470,
+   "cumExp": 3865,
+   "cumCoreH": 64.4
+  },
+  {
+   "level": 32,
+   "step": 533,
+   "cumExp": 4398,
+   "cumCoreH": 73.3
+  },
+  {
+   "level": 33,
+   "step": 605,
+   "cumExp": 5002,
+   "cumCoreH": 83.4
+  },
+  {
+   "level": 34,
+   "step": 686,
+   "cumExp": 5689,
+   "cumCoreH": 94.8
+  },
+  {
+   "level": 35,
+   "step": 779,
+   "cumExp": 6467,
+   "cumCoreH": 107.8
+  },
+  {
+   "level": 36,
+   "step": 884,
+   "cumExp": 7351,
+   "cumCoreH": 122.5
+  },
+  {
+   "level": 37,
+   "step": 1003,
+   "cumExp": 8354,
+   "cumCoreH": 139.2
+  },
+  {
+   "level": 38,
+   "step": 1138,
+   "cumExp": 9492,
+   "cumCoreH": 158.2
+  },
+  {
+   "level": 39,
+   "step": 1291,
+   "cumExp": 10784,
+   "cumCoreH": 179.7
+  },
+  {
+   "level": 40,
+   "step": 1466,
+   "cumExp": 12249,
+   "cumCoreH": 204.2
+  },
+  {
+   "level": 41,
+   "step": 1663,
+   "cumExp": 13912,
+   "cumCoreH": 231.9
+  },
+  {
+   "level": 42,
+   "step": 1887,
+   "cumExp": 15800,
+   "cumCoreH": 263.3
+  },
+  {
+   "level": 43,
+   "step": 2142,
+   "cumExp": 17941,
+   "cumCoreH": 299.0
+  },
+  {
+   "level": 44,
+   "step": 2430,
+   "cumExp": 20372,
+   "cumCoreH": 339.5
+  },
+  {
+   "level": 45,
+   "step": 2758,
+   "cumExp": 23130,
+   "cumCoreH": 385.5
+  },
+  {
+   "level": 46,
+   "step": 3130,
+   "cumExp": 26259,
+   "cumCoreH": 437.7
+  },
+  {
+   "level": 47,
+   "step": 3552,
+   "cumExp": 29811,
+   "cumCoreH": 496.8
+  },
+  {
+   "level": 48,
+   "step": 4030,
+   "cumExp": 33841,
+   "cumCoreH": 564.0
+  },
+  {
+   "level": 49,
+   "step": 4574,
+   "cumExp": 38415,
+   "cumCoreH": 640.2
+  },
+  {
+   "level": 50,
+   "step": 5190,
+   "cumExp": 43604,
+   "cumCoreH": 726.7
+  },
+  {
+   "level": 51,
+   "step": 5890,
+   "cumExp": 49494,
+   "cumCoreH": 824.9
+  },
+  {
+   "level": 52,
+   "step": 6683,
+   "cumExp": 56177,
+   "cumCoreH": 936.3
+  },
+  {
+   "level": 53,
+   "step": 7584,
+   "cumExp": 63762,
+   "cumCoreH": 1062.7
+  },
+  {
+   "level": 54,
+   "step": 8607,
+   "cumExp": 72368,
+   "cumCoreH": 1206.1
+  },
+  {
+   "level": 55,
+   "step": 9767,
+   "cumExp": 82135,
+   "cumCoreH": 1368.9
+  },
+  {
+   "level": 56,
+   "step": 11083,
+   "cumExp": 93218,
+   "cumCoreH": 1553.6
+  },
+  {
+   "level": 57,
+   "step": 12577,
+   "cumExp": 105795,
+   "cumCoreH": 1763.3
+  },
+  {
+   "level": 58,
+   "step": 14272,
+   "cumExp": 120068,
+   "cumCoreH": 2001.1
+  },
+  {
+   "level": 59,
+   "step": 16196,
+   "cumExp": 136264,
+   "cumCoreH": 2271.1
+  },
+  {
+   "level": 60,
+   "step": 18379,
+   "cumExp": 154643,
+   "cumCoreH": 2577.4
+  },
+  {
+   "level": 61,
+   "step": 20857,
+   "cumExp": 175500,
+   "cumCoreH": 2925.0
+  },
+  {
+   "level": 62,
+   "step": 23668,
+   "cumExp": 199168,
+   "cumCoreH": 3319.5
+  },
+  {
+   "level": 63,
+   "step": 26858,
+   "cumExp": 226026,
+   "cumCoreH": 3767.1
+  },
+  {
+   "level": 64,
+   "step": 30479,
+   "cumExp": 256504,
+   "cumCoreH": 4275.1
+  },
+  {
+   "level": 65,
+   "step": 34587,
+   "cumExp": 291091,
+   "cumCoreH": 4851.5
+  },
+  {
+   "level": 66,
+   "step": 39249,
+   "cumExp": 330340,
+   "cumCoreH": 5505.7
+  },
+  {
+   "level": 67,
+   "step": 44539,
+   "cumExp": 374879,
+   "cumCoreH": 6248.0
+  },
+  {
+   "level": 68,
+   "step": 50543,
+   "cumExp": 425422,
+   "cumCoreH": 7090.4
+  },
+  {
+   "level": 69,
+   "step": 57356,
+   "cumExp": 482778,
+   "cumCoreH": 8046.3
+  },
+  {
+   "level": 70,
+   "step": 65087,
+   "cumExp": 547864,
+   "cumCoreH": 9131.1
+  },
+  {
+   "level": 71,
+   "step": 73860,
+   "cumExp": 621724,
+   "cumCoreH": 10362.1
+  },
+  {
+   "level": 72,
+   "step": 83816,
+   "cumExp": 705540,
+   "cumCoreH": 11759.0
+  },
+  {
+   "level": 73,
+   "step": 95113,
+   "cumExp": 800653,
+   "cumCoreH": 13344.2
+  },
+  {
+   "level": 74,
+   "step": 107934,
+   "cumExp": 908587,
+   "cumCoreH": 15143.1
+  },
+  {
+   "level": 75,
+   "step": 122482,
+   "cumExp": 1031069,
+   "cumCoreH": 17184.5
+  },
+  {
+   "level": 76,
+   "step": 138992,
+   "cumExp": 1170061,
+   "cumCoreH": 19501.0
+  },
+  {
+   "level": 77,
+   "step": 157727,
+   "cumExp": 1327788,
+   "cumCoreH": 22129.8
+  },
+  {
+   "level": 78,
+   "step": 178987,
+   "cumExp": 1506776,
+   "cumCoreH": 25112.9
+  },
+  {
+   "level": 79,
+   "step": 203114,
+   "cumExp": 1709889,
+   "cumCoreH": 28498.2
+  },
+  {
+   "level": 80,
+   "step": 230492,
+   "cumExp": 1940381,
+   "cumCoreH": 32339.7
+  },
+  {
+   "level": 81,
+   "step": 261560,
+   "cumExp": 2201941,
+   "cumCoreH": 36699.0
+  },
+  {
+   "level": 82,
+   "step": 296816,
+   "cumExp": 2498758,
+   "cumCoreH": 41646.0
+  },
+  {
+   "level": 83,
+   "step": 336825,
+   "cumExp": 2835583,
+   "cumCoreH": 47259.7
+  },
+  {
+   "level": 84,
+   "step": 382226,
+   "cumExp": 3217809,
+   "cumCoreH": 53630.2
+  },
+  {
+   "level": 85,
+   "step": 433748,
+   "cumExp": 3651557,
+   "cumCoreH": 60859.3
+  },
+  {
+   "level": 86,
+   "step": 492213,
+   "cumExp": 4143770,
+   "cumCoreH": 69062.8
+  },
+  {
+   "level": 87,
+   "step": 558560,
+   "cumExp": 4702330,
+   "cumCoreH": 78372.2
+  },
+  {
+   "level": 88,
+   "step": 633849,
+   "cumExp": 5336179,
+   "cumCoreH": 88936.3
+  },
+  {
+   "level": 89,
+   "step": 719287,
+   "cumExp": 6055466,
+   "cumCoreH": 100924.4
+  },
+  {
+   "level": 90,
+   "step": 816242,
+   "cumExp": 6871708,
+   "cumCoreH": 114528.5
+  },
+  {
+   "level": 91,
+   "step": 926264,
+   "cumExp": 7797972,
+   "cumCoreH": 129966.2
+  },
+  {
+   "level": 92,
+   "step": 1051118,
+   "cumExp": 8849090,
+   "cumCoreH": 147484.8
+  },
+  {
+   "level": 93,
+   "step": 1192800,
+   "cumExp": 10041890,
+   "cumCoreH": 167364.8
+  },
+  {
+   "level": 94,
+   "step": 1353580,
+   "cumExp": 11395470,
+   "cumCoreH": 189924.5
+  },
+  {
+   "level": 95,
+   "step": 1536032,
+   "cumExp": 12931503,
+   "cumCoreH": 215525.0
+  },
+  {
+   "level": 96,
+   "step": 1743077,
+   "cumExp": 14674580,
+   "cumCoreH": 244576.3
+  },
+  {
+   "level": 97,
+   "step": 1978031,
+   "cumExp": 16652611,
+   "cumCoreH": 277543.5
+  },
+  {
+   "level": 98,
+   "step": 2244654,
+   "cumExp": 18897265,
+   "cumCoreH": 314954.4
+  },
+  {
+   "level": 99,
+   "step": 2547215,
+   "cumExp": 21444480,
+   "cumCoreH": 357408.0
+  }
+ ]
+}

@@ -438,6 +438,13 @@
                                   Content="关闭窗口时最小化到托盘（通知区域）" />
                         <TextBlock Text="勾选后点击关闭仅隐藏窗口，托盘图标双击恢复显示、右键退出；不勾选则直接退出。"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
+
+                        <CheckBox x:Name="AutoStartCheck" Style="{StaticResource OptionCheck}" Margin="0,14,0,0"
+                                  Content="开机自动启动" />
+                        <TextBlock Text="写入当前用户的注册表 Run 项（无需管理员权限），可在任务管理器「启动应用」页随时关闭；"
+                                   Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
+                        <TextBlock Text="注册表为唯一事实来源 —— 在别处手动禁用后，这里打开时会如实显示未启用。"
+                                   Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
                     </StackPanel>
                 </ScrollViewer>
 

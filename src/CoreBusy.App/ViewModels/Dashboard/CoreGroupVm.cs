@@ -16,7 +16,20 @@ using CoreBusy.Core.Models;
 public sealed class CoreGroupVm : ObservableObject
 {
     private readonly string _naturalSubtitle;
-    private IReadOnlyList<DashboardCoreVm> _cores;
+    /// <summary>
+    /// 呈现中的核心集合。<b>实例永不替换</b>，变化只通过
+    /// <see cref="ObservableCollection{T}"/> 的增删接口发生。
+    /// </summary>
+    /// <remarks>
+    /// 这是焦点展开的第三版方案，前两版都实测失败：
+    /// ① 换集合引用（<c>Cores = [target]</c>）——通知发了、ItemsControl 不重建容器；
+    /// ② 保持全量 + 逐核 Visibility 折叠——绑定求值了、值正确（getter 探针实测
+    ///    返回 Collapsed），但视觉树不应用。两者的共同点是都依赖
+    ///    <see cref="System.ComponentModel.INotifyPropertyChanged"/> 的属性通知。
+    /// 本方案改用 <c>INotifyCollectionChanged</c>：Remove/Insert 是 ItemsControl
+    /// 原生的容器增删协议，不经过属性绑定求值路径。
+    /// </remarks>
+    private readonly System.Collections.ObjectModel.ObservableCollection<DashboardCoreVm> _cores = new();
     private string _subtitle;
     private bool _isCumulativeMode;
 
@@ -33,7 +46,8 @@ public sealed class CoreGroupVm : ObservableObject
         TileColumns = tileColumns;
 
         NaturalCores = cores;
-        _cores = cores;
+        foreach (var core in cores)
+            _cores.Add(core);
 
         _naturalSubtitle = BuildSubtitle(group);
         _subtitle = _naturalSubtitle;
@@ -64,19 +78,41 @@ public sealed class CoreGroupVm : ObservableObject
     /// <summary>Tile 网格列数（随核心数自适应）。</summary>
     public int TileColumns { get; }
 
-    /// <summary>该分区包含的核心 Tile，**按当前视图顺序**呈现（累积视图下按名次降序）。</summary>
-    public IReadOnlyList<DashboardCoreVm> Cores
-    {
-        get => _cores;
-        set
-        {
-            if (ReferenceEquals(_cores, value))
-                return;
 
-            _cores = value;
-            OnPropertyChanged();
+    /// <summary>该分区包含的核心 Tile，**按当前视图顺序**呈现（累积视图下按名次降序）。</summary>
+    /// <remarks>
+    /// 焦点态下<b>只含焦点核</b>（其余被移出），取消时按自然序插回。
+    /// 变化通过 <see cref="System.Collections.Specialized.INotifyCollectionChanged"/>
+    /// 通知 UI，见 <see cref="_cores"/> 的 remarks。
+    /// </remarks>
+    public System.Collections.ObjectModel.ObservableCollection<DashboardCoreVm> Cores => _cores;
+
+    /// <summary>
+    /// 把呈现顺序对齐到 <paramref name="ordered"/>。
+    /// </summary>
+    /// <remarks>
+    /// 用 <see cref="System.Collections.ObjectModel.ObservableCollection{T}.Move"/>
+    /// 而非换引用：Move 让 ItemsControl 只重排既有容器，不销毁重建。
+    /// 顺序已一致时是空操作（调用方每帧都会进来，不能每帧重排）。
+    /// </remarks>
+    public void SetCoresOrder(IReadOnlyList<DashboardCoreVm> ordered)
+    {
+        if (ordered.Count != _cores.Count)
+            return;   // 焦点态下数量不同，重排无意义（调用方在焦点态本就会跳过）
+
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            if (ReferenceEquals(_cores[i], ordered[i]))
+                continue;
+
+            var from = _cores.IndexOf(ordered[i]);
+            if (from < 0)
+                return;   // 目标序列里出现了不在集合中的元素，防御：放弃本次重排
+
+            _cores.Move(from, i);
         }
     }
+
 
     /// <summary>核心的自然顺序（按核心编号），切回实时视图时用它复位。</summary>
     public IReadOnlyList<DashboardCoreVm> NaturalCores { get; }
@@ -108,6 +144,7 @@ public sealed class CoreGroupVm : ObservableObject
     /// <summary>「重置累计」按钮的可见性：仅累积视图下出现。</summary>
     public Visibility ResetVisibility
         => _isCumulativeMode ? Visibility.Visible : Visibility.Collapsed;
+
 
     /// <summary>
     /// 下发当前视图模式与运行时长文案。

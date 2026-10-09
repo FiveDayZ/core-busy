@@ -2,6 +2,7 @@ namespace CoreBusy.App.Views;
 
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using CoreBusy.App.Infrastructure;
@@ -25,6 +26,11 @@ public partial class MainWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = _viewModel;
+
+        // 弹卡动画（v1.27.0）：登场补间 + EXP 条生长都在 Opened/Closed 生命周期内，
+        // 关闭即停 —— 不给软件渲染引擎留任何常驻动画负载。
+        FocusCard.Opened += OnFocusCardOpened;
+        FocusCard.Closed += OnFocusCardClosed;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -239,6 +245,108 @@ public partial class MainWindow : Window
 
         _viewModel.SetCumulativeLoad(string.Equals(mode, "cumulative", StringComparison.Ordinal));
     }
+
+    /// <summary>
+    /// 点击某张核卡 → 弹出该核的详情卡片（v1.23.0 反堆砌版）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 详情改用 <see cref="System.Windows.Controls.Primitives.Popup"/> 承载：
+    /// 主界面保持 8 卡均等的简约布局，深度信息（健康度三分量/等级/角色/EXP）
+    /// 全部进浮层 —— 浮层 <c>StaysOpen=False</c>，点击卡片外任何位置自动关闭，
+    /// 「点空白收起」由控件机制天然保证，不再需要背景点击处理器与冒泡防护。
+    /// </para>
+    /// <para>
+    /// 浮层独立于主窗口视觉树（有自己的 HWND），其重绘不影响 8 卡区域 ——
+    /// 软件渲染下这也是一处卡顿收益。
+    /// </para>
+    /// </remarks>
+    private void OnCoreTileClick(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is FrameworkElement { DataContext: DashboardCoreVm core })
+        {
+            if (!ReferenceEquals(_focusedCore, core))
+            {
+                if (_focusedCore is not null)
+                    _focusedCore.Level.PropertyChanged -= OnFocusedLevelPropertyChanged;
+
+                _focusedCore = core;
+                _focusedCore.Level.PropertyChanged += OnFocusedLevelPropertyChanged;
+            }
+
+            FocusCard.DataContext = core;
+            FocusCard.PlacementTarget = (UIElement)sender;
+            FocusCard.IsOpen = true;
+        }
+    }
+
+    /// <summary>当前弹出卡片对应的核（其 Level 的 Progress 变化驱动 EXP 条补间）。</summary>
+    private DashboardCoreVm? _focusedCore;
+
+    /// <summary>弹卡打开（v1.27.0）：内容缩放 + 淡入登场；布局完成后把 EXP 条从 0 生长到当前值。</summary>
+    private void OnFocusCardOpened(object? sender, EventArgs e)
+    {
+        var scale = new System.Windows.Media.ScaleTransform(0.94, 0.94);
+        FocusCardRoot.RenderTransform = scale;
+
+        var ease = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut };
+        scale.BeginAnimation(
+            System.Windows.Media.ScaleTransform.ScaleXProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(320)) { EasingFunction = ease });
+        scale.BeginAnimation(
+            System.Windows.Media.ScaleTransform.ScaleYProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(320)) { EasingFunction = ease });
+        FocusCardRoot.BeginAnimation(
+            OpacityProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(220)));
+
+        // 等弹卡内容完成一次布局（ActualWidth 可用），再播 EXP 条生长动画。
+        Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Loaded,
+            () =>
+            {
+                if (FocusCard.IsOpen && _focusedCore is not null)
+                    AnimateExpFill(_focusedCore.Level.Progress);
+            });
+    }
+
+    /// <summary>弹卡关闭：解除 Progress 订阅，避免后台持续补间不可见元素。</summary>
+    private void OnFocusCardClosed(object? sender, EventArgs e)
+    {
+        if (_focusedCore is not null)
+        {
+            _focusedCore.Level.PropertyChanged -= OnFocusedLevelPropertyChanged;
+            _focusedCore = null;
+        }
+
+        ExpFill.BeginAnimation(WidthProperty, null);
+    }
+
+    /// <summary>聚焦核的等级进度变化 → EXP 条平滑补间到新宽度（软渲染下只动一个 Border 的 Width，代价极低）。</summary>
+    private void OnFocusedLevelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(CoreLevelVm.Progress) && FocusCard.IsOpen && _focusedCore is not null)
+            AnimateExpFill(_focusedCore.Level.Progress);
+    }
+
+    /// <summary>EXP 条宽度补间（ease-out 700ms）。EXP 每个采样周期都在涨，
+    /// 相邻两次补间首尾衔接，视觉上就是一条持续生长的经验条。</summary>
+    private void AnimateExpFill(double progress)
+    {
+        var trackWidth = ExpTrack.ActualWidth;
+        if (trackWidth <= 0)
+            return;
+
+        var target = Math.Clamp(progress, 0, 1) * trackWidth;
+        ExpFill.BeginAnimation(
+            WidthProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(target, TimeSpan.FromMilliseconds(700))
+            {
+                EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut },
+            });
+    }
+
 
     /// <summary>清零累积负载统计，从当前时刻重新开始积分。</summary>
     private void OnResetCumulativeClick(object sender, RoutedEventArgs e)

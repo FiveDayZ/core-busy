@@ -4,14 +4,28 @@
         xmlns:controls="clr-namespace:CoreBusy.App.Controls"
         Title="CORE-BUSY 核忙 - CPU Core Activity Monitor"
         Icon="pack://application:,,,/Assets/CoreBusy.ico"
-        Width="900" Height="640"
-        MinWidth="880" MinHeight="600"
+        Width="680" Height="500"
+        MinWidth="640" MinHeight="440"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" ResizeMode="CanResize"
         Background="{StaticResource CoreBusyBackgroundBrush}"
         FontFamily="Segoe UI Variable Display, Segoe UI, Microsoft YaHei UI"
         TextOptions.TextFormattingMode="Ideal"
         UseLayoutRounding="True">
+
+    <!--
+      迷你行模板引用了 InverseBoolToVisibility，而它此前只在 CpuCoreTile.xaml 的
+      局部资源里定义 —— StaticResource 在模板实例化时才解析，找不到就抛异常。
+      异常发生在容器生成的事务里，把本批全部视觉更新（含 7 张卡的移除）一起炸掉，
+      又被全局 DispatcherUnhandledException 吞掉 —— 表现为「焦点态零生效、零报错」。
+      这是焦点展开悬案的最终根因（UIA 树里迷你行 DataItemControl 的 Name 退化为
+      VM 类型全名，即 AutomationProperties.Name 绑定随模板一起未实例化的铁证）。
+    -->
+    <Window.Resources>
+        <controls:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+        <BooleanToVisibilityConverter x:Key="CoreBusyBoolToVis" />
+    </Window.Resources>
+
 
     <WindowChrome.WindowChrome>
         <WindowChrome CaptionHeight="44"
@@ -37,11 +51,17 @@
 
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
                         Margin="12,0,0,0">
+                <!--  v1.26.4：品牌角标 = 新图标的「Die 2×2 负载格」矢量版。
+                      颜色走 DynamicResource 品牌画刷 —— 随 intel/amd 主题联动；
+                      四格透明度阶梯 = 负载分档语义（与核卡色阶同构）。  -->
                 <Grid Width="22" Height="22" VerticalAlignment="Center">
-                    <Border CornerRadius="5" Background="{StaticResource CoreBusyAccentDimBrush}" />
-                    <Path Data="{StaticResource IconChip}" Fill="{StaticResource CoreBusyAccentBrush}"
-                          Stretch="Uniform" Width="13" Height="13"
-                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    <Border CornerRadius="5" Background="{DynamicResource CoreBusyAccentDimBrush}" />
+                    <UniformGrid Columns="2" Rows="2" Margin="4.5">
+                        <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.35" />
+                        <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.55" />
+                        <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.75" />
+                        <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" />
+                    </UniformGrid>
                 </Grid>
                 <TextBlock Text="CORE-BUSY" FontSize="13" FontWeight="SemiBold"
                            Foreground="{StaticResource CoreBusyTextPrimaryBrush}"
@@ -105,32 +125,22 @@
             </StackPanel>
         </Grid>
 
-        <!--  ==================== 1. 主内容区：左（核心 + 热力图）/ 右（概览 + 负载来源）  ====================  -->
+        <!--  ==================== 1. 主内容区：PCB 主板（v1.26.0）====================
+              背景是静态绘制的 PCB 板（走线/焊盘/安装孔/丝印），
+              每颗核心是板上的一颗芯片（见 CpuCoreTile 芯片封装造型）。  -->
+        <controls:PcbBoardControl Grid.Row="1" />
         <Grid Grid.Row="1" Margin="10,10,10,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="10" />
-                <ColumnDefinition Width="300" />
-            </Grid.ColumnDefinitions>
-
-            <!--  左列  -->
-            <Grid Grid.Column="0">
-                <Grid.RowDefinitions>
-                    <!--
-                        核心分区按内容取自然高度，封顶 260px。核心数多时（8P+16E 或 3 段以上）
-                        若仍让 Auto 行无限增高，会挤占下方 * 行把热力图压到 MinHeight 以下遭裁切。
-                    -->
-                    <RowDefinition Height="Auto" MaxHeight="260" />
-                    <RowDefinition Height="*" MinHeight="150" />
-                </Grid.RowDefinitions>
-
-                <!--  1.1 核心分区（动态生成：Intel 混合 → P/E；AMD → CPU Core / CCD n）  -->
-                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+            <!--  核心角色卡分区（v1.25.0：养成游戏形态，热力图已随方向调整移除）  -->
+            <Grid>
+                <!--  1.1 核心分区（动态生成：Intel 混合 → P/E；AMD → CPU Core / CCD n）。
+                      芯片直接坐在 PCB 上：仅一层轻微压暗圈出插座区，不再用面板卡片。  -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <ItemsControl ItemsSource="{Binding CoreGroups}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border Style="{StaticResource PanelCardStyle}" Padding="10,8,10,9" Margin="0,0,0,8">
+                                <Border Background="#17000000" Padding="10,8,10,9" Margin="0,0,0,8"
+                                        CornerRadius="8">
                                     <StackPanel>
                                         <controls:SectionHeader Title="{Binding Title}"
                                                                 Subtitle="{Binding Subtitle}"
@@ -166,6 +176,8 @@
                                                 </StackPanel>
                                             </controls:SectionHeader.RightContent>
                                         </controls:SectionHeader>
+
+
                                         <ItemsControl ItemsSource="{Binding Cores}">
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
@@ -174,105 +186,28 @@
                                             </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <controls:CpuCoreTile Margin="3,2" IsCompact="{Binding IsCompact}" />
+                                                    <!--  点击弹出的卡片承载该核全部深度信息
+                                                          （健康度三分量/等级/角色/EXP）——
+                                                          主界面保持 8 卡均等的简约布局（v1.23.0 反堆砌）。  -->
+                                                    <Border Background="Transparent" Cursor="Hand"
+                                                            Tag="{Binding Id}"
+                                                            MouseLeftButtonUp="OnCoreTileClick"
+                                                            AutomationProperties.Name="{Binding Id}"
+                                                            Focusable="True">
+                                                        <controls:CpuCoreTile Margin="3,2"
+                                                                               IsCompact="{Binding IsCompact}" />
+                                                    </Border>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
+
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
-
-                <!--  1.2 60 秒负载热力图  -->
-                <Border Grid.Row="1" Style="{StaticResource PanelCardStyle}" Padding="10,8,10,7"
-                        MinHeight="150">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <Grid Grid.Row="0">
-                            <controls:SectionHeader Title="60 秒负载热力图"
-                                                    Subtitle="每行一条线程，颜色越亮负载越高"
-                                                    AccentBrush="{StaticResource CoreBusyAccentBrush}" />
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                                        VerticalAlignment="Center">
-                                <TextBlock Text="低" FontSize="10.5" VerticalAlignment="Center"
-                                           Foreground="{StaticResource CoreBusyTextWeakBrush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="5,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat0Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat1Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat2Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat3Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat4Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat5Brush}" />
-                                <Border Width="12" Height="8" CornerRadius="2" Margin="2,0,0,0"
-                                        Background="{StaticResource CoreBusyHeat6Brush}" />
-                                <TextBlock Text="高" FontSize="10.5" VerticalAlignment="Center" Margin="5,0,0,0"
-                                           Foreground="{StaticResource CoreBusyTextWeakBrush}" />
-                            </StackPanel>
-                        </Grid>
-
-                        <controls:HeatMapControl Grid.Row="1" Margin="0,2,0,4"
-                                                 RowsData="{Binding Heatmap}"
-                                                 RowLabels="{Binding HeatmapLabels}"
-                                                 LabelWidth="0" />
-
-                        <!--  时间轴：左侧留白 = 热力图行标签宽度（LabelWidth 自动模式下约 30）  -->
-                        <Grid Grid.Row="2" Margin="30,0,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="60s" Style="{StaticResource WeakText}" HorizontalAlignment="Left" />
-                            <TextBlock Grid.Column="1" Text="45s" Style="{StaticResource WeakText}" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="2" Text="30s" Style="{StaticResource WeakText}" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="3" Text="15s" Style="{StaticResource WeakText}" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="4" Text="现在" Style="{StaticResource WeakText}" HorizontalAlignment="Right" />
-                        </Grid>
-                    </Grid>
-                </Border>
             </Grid>
-
-            <!--
-                右列：指标唯一来源（顶部不再重复展示同一组数值）。
-                整列包一层 ScrollViewer：三段面板合计高度在小窗口下会超出可视区，
-                没有它就只能被裁切——用户把窗口拉矮时宁可多一根滚动条，也不要丢掉一段面板。
-
-                v1.17.1 实测（用 UIA 读 ScrollBar 的 RangeValue.Maximum，即「内容高 − 视口高」，
-                不是目测像素）：
-                  窗口高 620（旧默认）→ 溢出 21.0px；
-                  窗口高 620 且删掉日历口径声明行 → 溢出 4.5px（该行值 16.5px）；
-                  窗口高 640 → 溢出 0，默认尺寸下不再出现滚动条。
-                也就是说：默认高度是按「内容自然高 + 约 15px 余量」定的，620 差了 4.5px。
-                **改这三个面板的行高/字号/内边距后，务必用 .workbuddy/measure_scroll.py 复测**
-                —— 这类量靠截图目测的误差（十几像素）比要判的量本身还大。
-            -->
-            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled"
-                          PanningMode="VerticalOnly">
-                <StackPanel>
-                    <controls:CpuOverviewPanel />
-
-                    <controls:PowerCalendarPanel Margin="0,8,0,0" />
-
-                    <!--  进程面板按内容取高：榜单恒为 5 行，若用 * 撑满会在底部留出大片空卡片  -->
-                    <controls:ProcessListPanel Margin="0,8,0,0"
-                                               ItemsSource="{Binding Processes}" />
-                </StackPanel>
-            </ScrollViewer>
         </Grid>
 
         <!--  ==================== 2. 底部状态栏  ====================  -->
@@ -281,5 +216,81 @@
                 Padding="12,0">
             <controls:StatusBarControl />
         </Border>
-    </Grid>
+    
+    <!--  焦点详情弹出卡片（v1.23.0）：点核卡弹出，点卡片外自动关闭。
+          AllowsTransparency + 双 Border 模拟软阴影（SoftwareOnly 下
+          DropShadowEffect 每帧重渲染是卡顿主因，禁用）。  -->
+    <Popup x:Name="FocusCard"
+           AllowsTransparency="True"
+           StaysOpen="False"
+           Placement="Right"
+           HorizontalOffset="6" VerticalOffset="-8"
+           PopupAnimation="Fade">
+        <Border x:Name="FocusCardRoot" Width="248" Background="{StaticResource CoreBusyPanelBrush}"
+                BorderBrush="{StaticResource CoreBusyAccentBrush}" BorderThickness="1"
+                CornerRadius="8" RenderTransformOrigin="0,0.5">
+            <Border Background="Transparent" BorderThickness="0,1,1,1"
+                    BorderBrush="#22000000" CornerRadius="8">
+                <StackPanel Margin="12,10">
+                    <!--  头部：核心号 + 状态 + 健康度  -->
+                    <Grid>
+                        <TextBlock Text="{Binding Id}" FontSize="16" FontWeight="Bold"
+                                   Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
+                        <TextBlock Text="{Binding StatusLabel}" FontSize="10.5" FontWeight="SemiBold"
+                                   Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+                    <!--  使用率大字 + 负载条  -->
+                    <Grid Margin="0,6,0,0">
+                        <TextBlock Text="{Binding UsageText}" FontSize="26" FontWeight="Bold"
+                                   Foreground="{Binding UsageTextBrush}"
+                                   Typography.NumeralAlignment="Tabular" />
+                    </Grid>
+                    <controls:MiniBar Height="5" Margin="0,4,0,0"
+                                      Value="{Binding Usage, Mode=OneWay}"
+                                      FillBrush="{Binding UsageBrush}"
+                                      TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                    <TextBlock Text="{Binding FreqText}" FontSize="10"
+                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,4,0,0"
+                               Typography.NumeralAlignment="Tabular" />
+
+                    <!--  成长主体（v1.27.0）：大号等级 + 平滑生长的 EXP 动画条 + ETA 预估。
+                          文字解释（口径声明/解锁清单）全部撤下：口径细节收进进度条 ToolTip，
+                          升级预告压缩为一行 ETA —— 看一眼就知道"在涨、涨多快、还差多少"。  -->
+                    <Separator Margin="0,8,0,6" Background="{StaticResource CoreBusyTrackBrush}" />
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Level.LevelText}" FontSize="28" FontWeight="Bold"
+                                       Foreground="{StaticResource CoreBusyAccentBrush}"
+                                       Typography.NumeralAlignment="Tabular" />
+                            <StackPanel Margin="10,0,0,3" VerticalAlignment="Bottom">
+                                <TextBlock Text="{Binding Level.StageText}" FontSize="11"
+                                           Foreground="{StaticResource CoreBusyTextSecondaryBrush}" />
+                                <TextBlock Text="{Binding Role.Label}" FontSize="10" Margin="0,1,0,0"
+                                           Foreground="{Binding Role.AccentBrush}" />
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock Text="{Binding Level.EtaText}" FontSize="10.5" FontWeight="SemiBold"
+                                   Foreground="{StaticResource CoreBusyAccentBrush}"
+                                   HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                    </Grid>
+
+                    <!--  EXP 动画条：宽度由 code-behind 在每次 Progress 变化时补间（ease-out），
+                          打开弹卡时从 0 生长到当前值 —— 直观呈现"这条就是攒下的经验"。
+                          完整口径说明收进 ToolTip（默认不可见，零视觉噪音）。  -->
+                    <Border x:Name="ExpTrack" Height="9" Margin="0,9,0,0"
+                            Background="{StaticResource CoreBusyTrackBrush}" CornerRadius="4.5"
+                            ToolTip="{Binding Level.TipText}" ToolTipService.ShowDuration="20000">
+                        <Border x:Name="ExpFill" HorizontalAlignment="Left" CornerRadius="4.5" Width="0"
+                                Background="{StaticResource CoreBusyAccentBrush}" />
+                    </Border>
+
+                    <TextBlock Text="{Binding Level.NextUnlockText}" FontSize="9" Margin="0,5,0,0"
+                               Foreground="{StaticResource CoreBusyTextWeakBrush}" />
+                </StackPanel>
+            </Border>
+        </Border>
+    </Popup>
+</Grid>
+
 </Window>

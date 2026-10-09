@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using CoreBusy.App.Controls;
 using CoreBusy.App.Infrastructure;
 using CoreBusy.App.Services;
+using CoreBusy.Core.Progression;
 using CoreBusy.App.Themes;
 using CoreBusy.Core.Energy;
 using CoreBusy.Core.Health;
@@ -18,14 +19,12 @@ using CoreBusy.Sensor;
 using CoreBusy.Windows.SelfTest;
 
 /// <summary>
-/// 主仪表盘视图模型：驱动 Mock/真实 CPU 监控服务的采样节奏，
-/// 汇聚总览指标、每核心 Tile、热力图历史、排行榜、主要进程与状态栏。
-/// 数据每 800ms 平滑刷新，热力图保留最近 60 秒（每列 1 秒）。
+/// 主视图模型（v1.25.0 起为「CPU 核心养成游戏」形态）：
+/// 驱动 Mock/真实 CPU 监控服务的采样节奏。负载是喂食机制 —— 核越忙经验越多；
+/// 每核一张角色卡（等级 / EXP 进度 / 性格角色 / 动作状态）+ 状态栏。
 /// </summary>
 public sealed class DashboardViewModel : ObservableObject
 {
-    private const int HeatmapSeconds = 60;
-
     /// <summary>性能模式下的采样周期（毫秒）：走"低开销"档，降低本工具自身资源占用。</summary>
     private const int PerformanceModeIntervalMs = 2000;
 
@@ -81,40 +80,96 @@ public sealed class DashboardViewModel : ObservableObject
     private Brush _statusDimBrush = Frozen("#264EC48F");
 
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
-    private readonly List<double> _temperatureHistory = [];
-    private double[][] _heatmap = [];
-
-    /// <summary>
-    /// 热力图的双缓冲备用组（v1.19.0）。每帧把"已发布的那组"当读源、往"备用组"里写，
-    /// 写完整组互换 —— 稳态下**零分配**（此前每帧要新建 16 行 × 60 列 = 约 8 KB）。
-    /// 行数变化（平台 / 线程数变化）时两组一起重建，并把 <see cref="_heatmapLastUtc"/> 归零
-    /// 让新矩阵重新铺满，避免新行继承到旧行的数据。
-    /// </summary>
-    private double[][] _heatmapSpare = [];
-
-    /// <summary>
-    /// Sparkline 序列（<see cref="PeakSeries"/>）的双缓冲（v1.19.0）。
-    /// 此前每帧 <c>_temperatureHistory.ToArray()</c> 新建一个 60 元素数组；现在只在两个
-    /// 固定数组之间交替发布，引用照样变化（绑定与重绘语义不变），但不再产生垃圾。
-    /// </summary>
-    private double[][] _peakSeriesBuffers = [];
-    private int _peakSeriesIndex;
 
     /// <summary>劳模榜 / 摸鱼王的有界候选数组（v1.19.0）：固定 5 槽，每帧就地搬移，零分配。</summary>
     private readonly CpuCoreSnapshot?[] _busiestBoard = new CpuCoreSnapshot?[RankRowCount];
     private readonly CpuCoreSnapshot?[] _idlestBoard = new CpuCoreSnapshot?[RankRowCount];
-    private DateTime _heatmapLastUtc = DateTime.MinValue;
     private string _cpuName = "读取中…";
     private string _cpuSpecs = string.Empty;
     private string _cpuVendorBadge = "CPU";
     private Brush _cpuBadgeBrush = Frozen("#1268D6");
-    private string _heatmapLabels = string.Empty;
 
-    /// <summary>扁平化的核心 Tile（顺序与热力图行序、快照序一致）。</summary>
+    /// <summary>扁平化的核心角色卡（v1.25.0 起 Tile 即角色卡）。</summary>
     private readonly List<DashboardCoreVm> _allCores = [];
+
+    /// <summary>
+    /// 按核心 Id 索引的 Tile（v1.22.0）。
+    /// </summary>
+    /// <remarks>
+    /// 等级刷新必须按 Id 找到对应 Tile，而 <see cref="_allCores"/> 的**顺序**在
+    /// 累积视图下会按均值重排，不能用它做查找。同一份 Tile 集合另建一份索引，
+    /// 避免为了刷新等级去遍历 + 线性查找（每帧 8 次比较虽不贵，但会让"顺序"与"身份"两个概念纠缠）。
+    /// </remarks>
+    private readonly Dictionary<string, DashboardCoreVm> _allCoresById = new(StringComparer.Ordinal);
 
     /// <summary>运行期累积负载积分器（核心与核内线程同源累积）。</summary>
     private readonly CumulativeLoadTracker _cumulative = new();
+
+    /// <summary>
+    /// 逐核经验累加器（v1.22.0）。与 <see cref="_cumulative"/> <b>共用同一份 Δt</b>，
+    /// 因此经验的时间轴与负载积分严格一致 —— 不另立基准，否则一次休眠后两者会错开。
+    /// </summary>
+    /// <remarks>
+    /// 只消费核级 <c>UsagePercent</c>，物理核不会因 SMT 被拆成两个等级。
+    /// </remarks>
+    private readonly CoreExpAccumulator _exp = new();
+
+    /// <summary>
+    /// 逐核角色统计累加器（v1.22.0）。与 <see cref="_exp"/> 共用同一份 Δt，
+    /// 但口径刻意不同：角色的负荷是<b>纯负荷</b>（不含陪伴兜底），因为它要回答
+    /// 「这颗核到底干了多少活」，兜底会把「闲」抹成「轻」、把「轻」抹成「勤」。
+    /// </summary>
+    private readonly CoreRoleAccumulator _role = new();
+
+    /// <summary>
+    /// 逐核角色账本（<c>core-roles.json</c>）。字段初始化即读回，角色因此跨进程延续。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="_expLedger"/> 分开两个文件：两者口径不同（角色纯负荷 / EXP 含兜底），
+    /// 生命周期也不同（判定规则一改就是换口径）。混在一个文件里迟早有人拿错。
+    /// </remarks>
+    private readonly Dictionary<string, CoreRoleEntry> _roleLedger = CoreRoleStore.Load().Cores;
+
+    /// <summary>
+    /// 逐核经验账本（<c>core-exp.json</c>）。字段初始化即从磁盘读回，
+    /// 因此等级天然跨进程延续，而不是每次启动都回到 Lv.1。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="_coreVoltages"/> 同一写法（直接在初始化里读盘）。
+    /// 口径不符时 <see cref="CoreExpStore.Load"/> 已把旧文件归档并返回空账本，
+    /// 这里无需再判口径。
+    /// </remarks>
+    private readonly Dictionary<string, CoreExpEntry> _expLedger;
+
+    /// <summary>
+    /// 上次落盘时的经验总量，用于判定"要不要写盘"。
+    /// </summary>
+    /// <remarks>
+    /// 不按帧无条件落盘：8 核 × 6 字段虽只有几 KB，但每秒写一次既无必要也会磨损磁盘；
+    /// 同时也不能等到关机才写（崩溃 / 被强杀就丢了整天）。
+    /// 故取「累计涨够 <see cref="ExpSaveIntervalMinutes"/> 分钟
+    /// <b>或</b>涨够 <see cref="ExpSaveMinDeltaCoreMinutes"/> 核·分」二者之一。
+    /// </remarks>    /// <summary>
+    /// 焦点态（v1.22.0）：当前选中的核 Id，全局唯一。
+    /// </summary>
+    /// <remarks>
+    /// 焦点<em>不跨分区</em>：在 P-Core 上选中一颗核，E-Core 分区的呈现不变。
+    /// 但全局只能有一处焦点 —— 同时展开两个分区会让"哪个是焦点"变得没有答案，
+    /// 而这正是本功能要提供的东西。
+    /// </remarks>
+    private string? _focusedCoreId;
+
+    /// <summary>上次落盘时的经验总量（各核之和），用于判定"要不要写盘"。
+    private double _expLastSavedCoreMinutes;
+
+    /// <summary>上次落盘时刻（秒，源同 <c>_lastAccumulatedSeconds</c>）。</summary>
+    private double _expLastSavedAtSeconds;
+
+    /// <summary>经验落盘的时间间隔（分钟）。</summary>
+    private const double ExpSaveIntervalMinutes = 5.0;
+
+    /// <summary>经验落盘的经验增量阈值（核·分）。</summary>
+    private const double ExpSaveMinDeltaCoreMinutes = 1.0;
 
     /// <summary>
     /// 运行期累积能耗积分器。与负载共用同一份 Δt（见 AccumulateSample），
@@ -147,6 +202,18 @@ public sealed class DashboardViewModel : ObservableObject
     /// 因此日历天然能跨进程延续，而不是每次打开都从零开始。
     /// </summary>
     private readonly DailyEnergyLedger _energyLedger = new();
+
+    /// <summary>
+    /// 历史累计运行秒数（v1.26.5，<c>stats\runtime.json</c>）。构造期读回，
+    /// Tick 按节流间隔写"基量 + 本次"，退出强制写 —— 崩溃最多丢最后一个节流段。
+    /// </summary>
+    private double _uptimeBaseSeconds;
+
+    /// <summary>上一次会话的运行时长（v1.27.1，随 runtime.json 读回，退出时更新）。</summary>
+    private double _lastSessionSeconds;
+
+    /// <summary>累计运行时长的上次落盘时刻（节流用）。</summary>
+    private DateTime _runtimeLastSave = DateTime.MinValue;
 
     /// <summary>
     /// WHEA 硬件错误事件源（v1.17.0）。未接线时为 null，健康度的"稳定性"维度
@@ -233,9 +300,6 @@ public sealed class DashboardViewModel : ObservableObject
     /// </summary>
     private const double HealthSaveIntervalSeconds = 300.0;
 
-    /// <summary>热力图行源（线程粒度）：行标签在构建时固化，负载每次采样刷新。</summary>
-    private (string Id, double Usage)[] _heatRows = [];
-
     private double _totalUsage;
     private string _totalUsageText = "0%";
     private string _tempText = "-";
@@ -260,7 +324,6 @@ public sealed class DashboardViewModel : ObservableObject
     private Brush _topCoreStatusDimBrush = Frozen("#263BA9FF");
     private string _peakTempText = "-";
     private string _peakTempTimeText = string.Empty;
-    private IReadOnlyList<double> _peakSeries = [];
     private string _uptimeText = "0:00:00";
     private string _energyText = "-";
     private string _energyHintText = "运行期累计能耗";
@@ -323,6 +386,12 @@ public sealed class DashboardViewModel : ObservableObject
         _gameDetector = gameDetector;
         _sensorAccess = sensorAccess ?? SensorAccessInfo.Ok;
 
+        // EXP 账本在构造期读回（readonly，全生命周期一份）。
+        (_expLedger, _) = CoreExpStore.Load();
+
+        // 累计运行时长基量在构造期读回（v1.26.5），状态栏主显"累计"与悬浮提示用。
+        (_uptimeBaseSeconds, _lastSessionSeconds) = RuntimeStatsStore.Load();
+
         // 健康度（v1.17.0）：基线从磁盘读回、由评分器就地更新、退出时落盘。
         _whea = wheaErrorSource;
         _healthBaselines = CoreHealthStore.Load();
@@ -381,12 +450,6 @@ public sealed class DashboardViewModel : ObservableObject
         var snapshots = _monitor.GetCoreSnapshots();
         BuildCoreGroups(_monitor.GetCoreGroups(), snapshots);
 
-        // 热力图按**线程**铺行（8 核 16 线程 → 16 行），与 Tile 的"物理核为格 + 核内线程条"
-        // 一粗一细配合，保证标称线程数全部可见。
-        // 行源同时承载行标签与最新负载：标签只在行数变化时重建，负载每帧就地刷新。
-        UpdateHeatRows(snapshots);
-        RefreshHeatmapLabels();
-
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = _monitor.SampleInterval,
@@ -421,20 +484,6 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>主要负载进程 TOP5。</summary>
     public ObservableCollection<ProcessRowVm> Processes { get; } = [];
 
-    /// <summary>60 秒热力图数据（14 行 × 60 列，行序 P0-P5、E0-E7）。</summary>
-    public double[][] Heatmap
-    {
-        get => _heatmap;
-        private set => SetProperty(ref _heatmap, value);
-    }
-
-    /// <summary>温度 Sparkline 数据。</summary>
-    public IReadOnlyList<double> PeakSeries
-    {
-        get => _peakSeries;
-        private set => SetProperty(ref _peakSeries, value);
-    }
-
     public string CpuName { get => _cpuName; private set => SetProperty(ref _cpuName, value); }
 
     public string CpuSpecs { get => _cpuSpecs; private set => SetProperty(ref _cpuSpecs, value); }
@@ -444,12 +493,6 @@ public sealed class DashboardViewModel : ObservableObject
 
     /// <summary>CPU 厂商徽标底色。</summary>
     public Brush CpuBadgeBrush { get => _cpuBadgeBrush; private set => SetProperty(ref _cpuBadgeBrush, value); }
-
-    /// <summary>热力图行标签（线程粒度，随真实拓扑生成，逗号分隔）。</summary>
-    public string HeatmapLabels { get => _heatmapLabels; private set => SetProperty(ref _heatmapLabels, value); }
-
-    /// <summary>热力图行数（= 逻辑线程数，供界面做密度自适应）。</summary>
-    public int HeatmapRowCount => _heatRows.Length;
 
     public double TotalUsage { get => _totalUsage; private set => SetProperty(ref _totalUsage, value); }
 
@@ -500,6 +543,11 @@ public sealed class DashboardViewModel : ObservableObject
     public string PeakTempTimeText { get => _peakTempTimeText; private set => SetProperty(ref _peakTempTimeText, value); }
 
     public string UptimeText { get => _uptimeText; private set => SetProperty(ref _uptimeText, value); }
+
+    /// <summary>运行时长的悬浮提示（v1.26.5）：本次 + 历史累计。</summary>
+    public string UptimeHintText { get => _uptimeHintText; private set => SetProperty(ref _uptimeHintText, value); }
+
+    private string _uptimeHintText = "本次运行时长\n累计运行时长需运行片刻后显示";
 
     /// <summary>
     /// 运行期累计 **CPU 封装能耗**（自动换档单位：mWh / Wh / kWh），显示在状态栏运行时长右侧。
@@ -656,13 +704,9 @@ public sealed class DashboardViewModel : ObservableObject
     /// </summary>
     public bool IsCumulativeLoad { get => _isCumulativeLoad; private set => SetProperty(ref _isCumulativeLoad, value); }
 
-    /// <summary>启动：预热热力图（用当前采样铺满 60 列），随后按采样周期刷新。</summary>
+    /// <summary>启动：随后按采样周期刷新。</summary>
     public void Start()
     {
-        // 预热：一打开就是满 60 列，而不是空白渐长；真实历史随墙钟秒滚动累积。
-        PushHeatmap(_monitor.GetCoreSnapshots(), prefill: true);
-        AppendTemperatureHistory(_monitor.GetSnapshot().PackageTemperatureC);
-
         Tick(); // 首帧完整刷新，避免要等一个采样周期才出数值。
         _timer.Start();
     }
@@ -673,7 +717,18 @@ public sealed class DashboardViewModel : ObservableObject
         _timer.Stop();
         _energyLedger.SaveIfNeeded(force: true);
         SaveHealthBaselinesIfNeeded(force: true);
+
+        // 正常退出时强制合并 EXP（崩溃/强杀丢掉的只是这段差值，账本本身无损）。
+        SaveExpIfNeeded(elapsedSinceStart(), force: true);
+
+        // 累计运行时长（v1.26.5）：退出前强制落最终值，并把本次会话记为"上次"。
+        RuntimeStatsStore.Save(
+            _uptimeBaseSeconds + _uptime.Elapsed.TotalSeconds,
+            _uptime.Elapsed.TotalSeconds);
     }
+
+    /// <summary>自启动以来的墙钟秒数（与 <see cref="_uptime"/> 同源）。</summary>
+    private double elapsedSinceStart() => _uptime.Elapsed.TotalSeconds;
 
     /// <summary>
     /// 切换性能模式（标题栏"性能模式"按钮）。开启后本工具以低开销档运行：
@@ -919,6 +974,7 @@ public sealed class DashboardViewModel : ObservableObject
                 index++;
                 cores.Add(vm);
                 _allCores.Add(vm);
+                _allCoresById[id] = vm;
             }
 
             // 负载口径开关是全局唯一的，只挂到第一段分区（CoreGroupVm 内部据此决定可见性）。
@@ -966,6 +1022,15 @@ public sealed class DashboardViewModel : ObservableObject
 
         _cumulative.Accumulate(snapshots, delta);
 
+        // 逐核经验（v1.22.0）：与负载共用这份Δt —— 两者描写的是同一段时间轴，
+        // 各自维护基准会在一次休眠后永久错开。只喂核级UsagePercent，
+        // 物理核不因 SMT 被拆成两个等级。
+        _exp.Accumulate(snapshots, delta);
+
+        // 角色统计共用同一份 Δt；需要采样时刻才能判昼夜归属，
+        // 取 DateTime.Now（与 _energyLedger.Record 同源，保证三者时间轴一致）。
+        _role.Accumulate(snapshots, delta, DateTime.Now);
+
         // Accumulate 内部做读数有效性判定（有限值 + 合理域），返回值即其结论。
         var energySampleLive = _energy.Accumulate(snapshot.PackagePowerW, delta);
 
@@ -1012,6 +1077,180 @@ public sealed class DashboardViewModel : ObservableObject
         }
 
         _energyLedger.SaveIfNeeded();
+    }
+
+    /// <summary>
+    /// 刷新每核的**角色**判定并把统计量并入跨进程账本（v1.22.0）。
+    /// </summary>
+    /// <remarks>
+    /// 角色显示在弹出卡片里（<see cref="DashboardCoreVm.Role"/>）。
+    /// 判定用「账本 + 本次运行」的合并量，否则重启后角色要重新积累很久才稳定 ——
+    /// 与 EXP 同一个道理。落盘间隔比 EXP 稀（统计量变化慢）。
+    /// </remarks>
+    private void RefreshCoreRoles(double elapsedSeconds)
+    {
+        foreach (var id in _role.CoreIds)
+        {
+            var stats = _role.StatsOf(id);
+            if (!_roleLedger.TryGetValue(id, out var entry))
+                continue;
+
+            if (_allCoresById.TryGetValue(id, out var vm))
+            {
+                var merged = new CoreRoleStats
+                {
+                    ObservedCoreMinutes = entry.ObservedCoreMinutes + stats.ObservedCoreMinutes,
+                    LoadCoreMinutes = entry.LoadCoreMinutes + stats.LoadCoreMinutes,
+                    LoadSquaredCoreMinutes = entry.LoadSquaredCoreMinutes + stats.LoadSquaredCoreMinutes,
+                    PeakPercent = MaxOf(entry.PeakPercent, stats.PeakPercent),
+                    DayLoadCoreMinutes = entry.DayLoadCoreMinutes + stats.DayLoadCoreMinutes,
+                    NightLoadCoreMinutes = entry.NightLoadCoreMinutes + stats.NightLoadCoreMinutes,
+                };
+                vm.Role.Refresh(CoreRoleClassifier.Classify(merged), merged);
+            }
+
+            CoreRoleStore.Merge(_roleLedger, id, stats);
+        }
+
+        if (_roleLastSavedAtSeconds > 0
+            && elapsedSeconds - _roleLastSavedAtSeconds < RoleSaveIntervalMinutes * 60.0)
+        {
+            return;
+        }
+
+        CoreRoleStore.Save(_roleLedger);
+        _roleLastSavedAtSeconds = elapsedSeconds;
+    }
+
+    /// <summary>两个峰值取较大者；任一为 NaN 时取另一个（读不到就忽略，不当 0）。</summary>
+    private static double MaxOf(double a, double b)
+    {
+        if (double.IsNaN(a))
+            return b;
+        if (double.IsNaN(b))
+            return a;
+        return Math.Max(a, b);
+    }
+
+    /// <summary>角色账本落盘的时间间隔（分钟）。比 EXP 稀：统计量本身变化慢。</summary>
+    private const double RoleSaveIntervalMinutes = 15.0;
+
+    private double _roleLastSavedAtSeconds;
+
+    /// <summary>
+    /// 把逐核经验同步进账本并按需落盘（v1.22.0）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 累加器只在内存里，进程一停就全丢；故必须落盘。这里同时做三件事：
+    /// 把账本里的历史与本次运行的增量<b>合并</b>（账本是跨进程的，累加器是本次运行的），
+    /// 再判定要不要写盘。
+    /// </para>
+    /// <para>
+    /// <b>合并而不是覆盖</b>：账本存的是"截止上次落盘"的量，累加器存的是"本次运行"的量，
+    /// 两者相加才是真值。只写累加器会把此前几天的积累清零 ——
+    /// 那与"跨日重置等于每天回到 Lv.1"是同一种失败，只是更隐蔽（发生在每次启动时）。
+    /// </para>
+    /// </remarks>
+    private void SaveExpIfNeeded(double elapsedSeconds, bool force = false)
+    {
+        var total = 0.0;
+        foreach (var id in _exp.CoreIds)
+            total += _exp.ExpCoreMinutes(id);
+
+        // 首次落盘无条件执行：否则程序刚启动又立刻被关掉时，这一段经验永远留不下来。
+        var intervalDue = elapsedSeconds - _expLastSavedAtSeconds >= ExpSaveIntervalMinutes * 60.0;
+        var deltaDue = total - _expLastSavedCoreMinutes >= ExpSaveMinDeltaCoreMinutes;
+        if (!force && _expLastSavedAtSeconds > 0 && !intervalDue && !deltaDue)
+            return;
+
+        foreach (var id in _exp.CoreIds)
+        {
+            var load = _exp.LoadCoreMinutes(id);
+            var floor = _exp.FloorCoreMinutes(id);
+
+            // 账本里可能还没有这颗核（首次出现）；有则取两者较大值。
+            // 取 max 而非相加：两者的 Δt 区间是同一份，账本覆盖的是上次落盘之前的那段，
+            // 累加器覆盖的是本次运行的全部—— 直接相加会在两者区间重叠时重复计数。
+            // （实际上二者区间不重叠，但 max 对"账本已被别处抬高"也更安全。）
+            if (_expLedger.TryGetValue(id, out var entry))
+            {
+                entry.LoadCoreMinutes = Math.Max(entry.LoadCoreMinutes, load);
+                entry.FloorCoreMinutes = Math.Max(entry.FloorCoreMinutes, floor);
+            }
+            else
+            {
+                entry = new CoreExpEntry { LoadCoreMinutes = load, FloorCoreMinutes = floor };
+                _expLedger[id] = entry;
+            }
+        }
+
+        CoreExpStore.Save(_expLedger);
+        _expLastSavedCoreMinutes = total;
+        _expLastSavedAtSeconds = elapsedSeconds;
+    }
+
+    /// <summary>
+    /// 用当前快照更新每核经验显示（等级 / 进度 / 悬浮说明），并顺带留档峰值。
+    /// </summary>
+
+
+
+    /// <summary>当前焦点核 Id；未选中时为 null。</summary>
+    public string? FocusedCoreId
+    {
+        get => _focusedCoreId;
+        private set => SetProperty(ref _focusedCoreId, value);
+    }
+
+    /// <summary>是否有焦点核。</summary>
+    public bool HasCoreFocus => _focusedCoreId is not null;
+
+    /// <summary>收起提示的可见性（仅焦点态下出现，给用户一个"怎么退出去"的出口）。</summary>
+    public System.Windows.Visibility CollapseHintVisibility =>
+        _focusedCoreId is null ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
+
+    private void RefreshCoreLevels(IReadOnlyList<CpuCoreSnapshot> snapshots)
+    {
+        foreach (var core in snapshots)
+        {
+            if (!_allCoresById.TryGetValue(core.Id, out var vm))
+                continue;
+
+            // **账本 + 本次运行增量**，缺一不可。
+            // 只取累加器的话，进程一停历史就归零，重启后每颗核都回到 Lv 1 ——
+            // 而"跨进程延续"正是 EXP 体系的前提（跨日重置等于每天白攒）。
+            // 累加器覆盖"上次落盘之后"这一段，账本覆盖"上次落盘之前"，两者区间不重叠，
+            // 故相加而非取 max。
+            var runExp = _exp.ExpCoreMinutes(core.Id);
+            var ledgerExp = _expLedger.TryGetValue(core.Id, out var ledger) ? ledger.ExpCoreMinutes : 0.0;
+            vm.Level.Refresh(ledgerExp + runExp, _exp.IsFloorDominated(core.Id));
+
+            // EXP 速率（v1.27.0）：本次运行的均值（核·分/秒），驱动弹卡"距升级约 X"。
+            // 观测不足 30s 时速率噪声太大，给 0 走"正在积累经验…"占位。
+            var expRate = _exp.ObservedSeconds > 30 ? runExp / _exp.ObservedSeconds : 0.0;
+            vm.Level.UpdateEta(expRate);
+
+            // 峰值留档：只在新高时写，且读不到就跳过（NaN 不参与比较）。
+            if (!_expLedger.TryGetValue(core.Id, out var entry))
+                continue;
+
+            if (!double.IsNaN(core.UsagePercent) && core.UsagePercent > entry.PeakPercent)
+            {
+                entry.PeakPercent = core.UsagePercent;
+                entry.PeakAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            if (!double.IsNaN(core.EffectiveFrequencyGHz)
+                && (double.IsNaN(entry.MaxGhz) || core.EffectiveFrequencyGHz > entry.MaxGhz))
+            {
+                entry.MaxGhz = core.EffectiveFrequencyGHz;
+            }
+
+            var level = vm.Level.Level;
+            if (level > entry.TotalLevels)
+                entry.TotalLevels = level;
+        }
     }
 
     /// <summary>
@@ -1067,7 +1306,9 @@ public sealed class DashboardViewModel : ObservableObject
         var elapsed = _uptime.Elapsed;
         var snapshot = _monitor.GetSnapshot();
 
-        UptimeText = $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+        // 主显 = **累计运行时间**（v1.27.1）：基量 + 本次。悬浮提示里再拆"本次 / 上次"。
+        UptimeText = FmtTotalUptime(_uptimeBaseSeconds + elapsed.TotalSeconds);
+        UpdateRuntimeLedger(elapsed);
 
         // 0. 整机硬件状态（内存/显卡/磁盘 + 功耗模型所需的型号信息：内存代际、盘介质、独显标志）。
         //    **本帧只读一次**：能耗模型与状态栏共用同一份，否则"估算用的内存占用/盘数"
@@ -1080,24 +1321,30 @@ public sealed class DashboardViewModel : ObservableObject
         //    用常量会让积分权重随档位失真。
         AccumulateSample(snapshots, snapshot, hardware, elapsed.TotalSeconds);
 
-        // 2. 核心 Tile + 热力图推入（扁平序 = 分区序 = 热力图行序）。
+        // 2. 核心角色卡（扁平序 = 分区序）。
         if (IsCumulativeLoad)
             ApplyCumulativeCoreView(snapshots);
         else
             ApplyLiveCoreView(snapshots);
 
-        PushHeatmap(snapshots);
-
-        // 2b. 核心健康度（v1.17.0）。放在核心 Tile 与热力图之后：它依赖的是**窗口统计**，
-        //     晚一帧看到分数没有影响；而它自己要在锁外跑一次事件日志查询（内部 5 分钟节流），
+        // 2b. 核心健康度（v1.17.0）：依赖**窗口统计**，晚一帧看到分数没有影响；
+        //     且它自己要在锁外跑一次事件日志查询（内部 5 分钟节流），
         //     排在所有"每帧必画"的面板之后，万一查询变慢也不会拖慢它们。
         ApplyHealthView(snapshots, snapshot.PackageTemperatureC);
 
-        // 3. 温度历史（Sparkline）。
-        AppendTemperatureHistory(snapshot.PackageTemperatureC);
-        PublishPeakSeries();
+        // 2c. 逐核经验等级（v1.22.0）。与健康度同样排在"每帧必画"的面板之后 ——
+        //     它由运行期积分驱动，读数每帧都在涨，但**等级**与进度只在跨过阈值时才变，
+        //     CoreLevelVm.Refresh 已做逐项比对，不会每帧触发 8 张 Tile 重绘。
+        //     落盘放在这里（而非构造函数里）是因为首次积分还没发生，
+        //     太早写会把一份空账本当成真实数据固化下来。
+        RefreshCoreLevels(snapshots);
+        SaveExpIfNeeded(elapsed.TotalSeconds);
+        RefreshCoreRoles(elapsed.TotalSeconds);
 
-        // 4. 总览指标（NaN 安全：传感器缺失显示 "-"）。
+        // 2d. 逐核角色（v1.22.0）。放在等级之后：两者都只读同一份账本，
+        //     但角色判定要在账本并入之后再做，才能拿到「历史 + 本次」的合并量。
+
+        // 3. 总览指标（NaN 安全：传感器缺失显示 "-"）。
         TotalUsage = snapshot.TotalUsagePercent;
         TotalUsageText = $"{snapshot.TotalUsagePercent:0}%";
         TempText = FmtTempC(snapshot.PackageTemperatureC, "℃");
@@ -1471,10 +1718,10 @@ public sealed class DashboardViewModel : ObservableObject
         for (var i = 0; i < snapshots.Count && i < _allCores.Count; i++)
             _allCores[i].ApplyLive(snapshots[i]);
 
+
         foreach (var group in CoreGroups)
         {
-            if (!SameInstanceOrder(group.Cores, group.NaturalCores))
-                group.Cores = group.NaturalCores;
+            group.SetCoresOrder(group.NaturalCores);
         }
 
         RefreshGroupMode();
@@ -1510,8 +1757,7 @@ public sealed class DashboardViewModel : ObservableObject
                 .OrderBy(c => rankById.TryGetValue(c.Id, out var r) ? r : int.MaxValue)
                 .ToArray();
 
-            if (!SameInstanceOrder(group.Cores, sorted))
-                group.Cores = sorted;
+            group.SetCoresOrder(sorted);
         }
 
         RefreshGroupMode();
@@ -1610,26 +1856,35 @@ public sealed class DashboardViewModel : ObservableObject
         EnergyIsLive = _energy.HasLiveSample;
         SystemEnergyIsLive = _systemEnergy.HasLiveSample;
 
+        // 主显 = **累计**（v1.27.1）：能耗账本（与日历同源）逐日求和。
+        // 账本逐帧记账，**已包含本次运行** —— 绝不做"账本 + 本次"的相加（会算两遍）。
+        // 账本为空时退回本次运行量；两者都没有（传感器不可用）才显示 "-"。
+        var ledgerJoules = _energyLedger.TotalJoules();
+        var sessionJoules = _systemEnergy.Joules;
+        var totalJoules = Math.Max(ledgerJoules, sessionJoules);
+
         if (_energy.ObservedSeconds <= 0)
         {
             EnergyText = "-";
             EnergyHintText = "运行期累计 CPU 封装能耗\n功耗传感器不可用\n需以管理员身份运行方可读取封装功耗";
 
             // 整机估算**没有独立数据源**，它的全部输入里 CPU 项只能来自封装读数 ——
-            // 拿不到封装读数时唯一诚实的输出是 "-"。**绝不允许退回"按 TDP 猜一个 CPU 功耗"**：
-            // 那会造出「左边 CPU 一路 "-"、右边整机却有个数」的自相矛盾画面，比不显示更糟。
-            SystemEnergyText = "-";
-            SystemEnergyHintText =
-                "运行期累计整机能耗（估算，非实测）\n逐部件模型缺 CPU 项：封装功耗不可读\n"
-                + "（按型号硬估 CPU 功耗会与左侧实测路自相矛盾，故整条不出数）";
+            // 拿不到封装读数时本次没有新增，但仍如实展示历史账本累计。
+            // **绝不允许退回"按 TDP 猜一个 CPU 功耗"**：那会造出「左边 CPU 一路 "-"、
+            // 右边整机却有个数」的自相矛盾画面，比不显示更糟。
+            SystemEnergyText = totalJoules > 0
+                ? "≈ " + CumulativeEnergyTracker.FormatEnergy(totalJoules)
+                : "-";
+            SystemEnergyHintText = totalJoules > 0
+                ? $"功耗传感器不可用，本次无新增读数\n累计 ≈ {CumulativeEnergyTracker.FormatEnergy(totalJoules)}（历史账本）"
+                : "整机能耗需功耗传感器（需以管理员身份运行）\n整机为逐部件估算，依赖封装功耗读数";
             return;
         }
 
         EnergyText = CumulativeEnergyTracker.FormatEnergy(_energy.Joules);
 
-        // 「≈」是数值语义的一部分，不是装饰：本值与左侧 CPU 值同为 Wh 量级、同样自动换档，
-        // 不标就分不出哪个是传感器实测、哪个是模型外推。
-        SystemEnergyText = "≈ " + CumulativeEnergyTracker.FormatEnergy(_systemEnergy.Joules);
+        // 「≈」是数值语义的一部分，不是装饰：估算量必须与实测量在视觉上分得开。
+        SystemEnergyText = "≈ " + CumulativeEnergyTracker.FormatEnergy(totalJoules);
 
         var window = TimeSpan.FromSeconds(_energy.ObservedSeconds);
         var coverage = _cumulative.ObservedSeconds > 0
@@ -1642,164 +1897,53 @@ public sealed class DashboardViewModel : ObservableObject
             $"运行期累计 CPU 封装能耗\n统计 {span}"
             + $" · 覆盖 {coverage:0}%\n平均功率 {FmtValueUnit(_energy.AverageWatt, "0", "W")}";
 
+        // 悬浮只留关键信息（v1.27.1 精简）：本次 / 累计 / 一行口径声明。
+        // 逐部件构成、键名清单等长解释全部移除 —— 那是排查问题时才需要的内容。
+        var ledgerHours = TimeSpan.FromSeconds(_energyLedger.TotalSeconds()).TotalHours;
         SystemEnergyHintText =
-            "运行期累计整机能耗（**估算**，非实测）\n逐部件构成（本帧）\n"
-            + DescribeSystemPower()
-            + $"\n统计 {span} · 覆盖 {coverage:0}%"
-            + $"\n平均整机功率 {FmtValueUnit(_systemEnergy.AverageWatt, "0", "W")}"
-            + "\n逐项系数可校准：%APPDATA%\\CORE-BUSY\\settings.json"
-            // 键名一律用 nameof 从 AppSettings 现场取，**绝不写字符串字面量**：
-            // v1.20.1 这里曾手写成 BoardWatts / FanWatts / GpuFallbackWatts / DramWattsPerGb，
-            // 而 settings.json 里真实的键是 SystemPowerBoardWatts / SystemPowerFanWatts / …（少了前缀）。
-            // 用户照着提示改配置不会有任何效果，而且**不报错** —— 静默失效。
-            // nameof 让键名与属性定义同源；属性改名时提示跟着变。
-            // （settings.json 由 SettingsStore 序列化，未设命名策略，键名 = 属性名。）
-            + $"\n（{nameof(AppSettings.SystemPowerCalibration)}"
-            + $" / {nameof(AppSettings.SystemPowerBoardWatts)}"
-            + $" / {nameof(AppSettings.SystemPowerFanWatts)}"
-            + $" / {nameof(AppSettings.SystemPowerGpuFallbackWatts)}"
-            + $" / {nameof(AppSettings.SystemPowerDramWattsPerGb)}）";
+            $"本次运行 ≈ {CumulativeEnergyTracker.FormatEnergy(sessionJoules)}"
+            + $"（均值 {FmtValueUnit(_systemEnergy.AverageWatt, "0", "W")} · 统计 {span}）"
+            + $"\n累计 ≈ {CumulativeEnergyTracker.FormatEnergy(totalJoules)}"
+            + $"（账本 {_energyLedger.DayCount} 天 · 观测 {ledgerHours:0.0} 小时）"
+            + "\n整机为逐部件估算（非实测），系数可在 settings.json 校准";
     }
 
     /// <summary>
-    /// 逐部件构成文案（v1.20.1）。每一行都必须能回答"这个数是怎么来的"：
-    /// 实测的写"实测"，模型的写清额定值/系数与实测量，判别不出的如实说"未计入"。
-    /// <para>
-    /// 这不是装饰性说明。整机估算是**合成量**，用户看到反直觉的数时唯一的出路是逐项核对；
-    /// 只给一个总数等于把"估算"包装成"读数"。
-    /// </para>
+    /// 累计运行时长（v1.26.5）：刷新悬浮提示并按节流间隔落盘。
+    /// 写的是"基量 + 本次"的绝对值（非增量），崩溃/写坏都能在下一个节流点自愈。
     /// </summary>
-    private string DescribeSystemPower()
+    private void UpdateRuntimeLedger(TimeSpan session)
     {
-        var breakdown = _systemBreakdown;
-        var hardware = _hardwareInfo;
-        var inputs = _systemInputs;
+        // 悬浮只留两条（v1.27.1 精简）：本次 / 上次。
+        var lastText = _lastSessionSeconds > 0
+            ? FmtTotalUptime(_lastSessionSeconds)
+            : "无记录（首次运行）";
 
-        if (!breakdown.IsUsable && double.IsFinite(breakdown.CpuWatt))
+        UptimeHintText =
+            $"本次运行 {(int)session.TotalHours}:{session.Minutes:00}:{session.Seconds:00}"
+            + $"\n上次运行 {lastText}";
+
+        var now = DateTime.Now;
+        if ((now - _runtimeLastSave).TotalSeconds >= RuntimeSaveIntervalSeconds)
         {
-            // 有 CPU 项却出不了总数：只可能是分项系数被填成了一组极端的组合。
-            return "  估算总量越界，拒绝出数（检查分项系数设置）";
+            _runtimeLastSave = now;
+            RuntimeStatsStore.Save(_uptimeBaseSeconds + session.TotalSeconds, _lastSessionSeconds);
         }
-
-        var lines = new List<string>();
-
-        if (double.IsFinite(breakdown.CpuWatt))
-            lines.Add($"  CPU 封装 {breakdown.CpuWatt:0.#} W · 实测");
-
-        if (hardware.HasGpu)
-            lines.Add("  显卡 " + DescribeGpu(breakdown, inputs));
-
-        if (hardware.MemoryTotalGb > 0)
-            lines.Add("  内存 " + DescribeMemory(breakdown, hardware, inputs));
-
-        if (hardware.DriveCount > 0)
-            lines.Add("  硬盘 " + DescribeStorage(breakdown, hardware, inputs));
-
-        lines.Add($"  风扇 ≈ {breakdown.FanWatt:0.#} W · {DescribeFanCount(inputs)}"
-                  + $"（每风扇 {SystemPowerEstimator.NormalizeFan(_settings.SystemPowerFanWatts):0.#} W）");
-        lines.Add($"  主板等 {breakdown.BoardWatt:0.#} W · 固定开销");
-
-        var calibration = SystemPowerEstimator.NormalizeCalibration(_settings.SystemPowerCalibration);
-        var calibrationText = Math.Abs(calibration - 1.0) < 0.0001 ? string.Empty : $"，校准 ×{calibration:0.##}";
-        lines.Add($"  **合计 ≈ {breakdown.TotalWatt:0.#} W**{calibrationText}");
-
-        return string.Join("\n", lines);
     }
 
-    /// <summary>显卡项文案：实测 / 型号估算 / 核显已计入 / 型号未识别，四种身份必须分得开。</summary>
-    private static string DescribeGpu(SystemPowerBreakdown breakdown, SystemPowerInputs? inputs)
+    /// <summary>累计运行时长的落盘节流间隔（秒）。崩溃最多丢这一段。</summary>
+    private const double RuntimeSaveIntervalSeconds = 120.0;
+
+    /// <summary>累计时长文案：不足 1 小时给分钟，1–48 小时给小时，更长按「天 + 小时」。</summary>
+    private static string FmtTotalUptime(double seconds)
     {
-        var count = inputs?.DiscreteGpuNames.Count ?? 0;
-        var countText = count > 1 ? $"（{count} 块）" : string.Empty;
-
-        return breakdown.GpuSource switch
-        {
-            GpuPowerSource.Measured =>
-                $"{breakdown.GpuWatt:0.#} W · 实测{countText}",
-
-            GpuPowerSource.RatedByModel =>
-                $"≈ {breakdown.GpuWatt:0.#} W · 按型号额定 {breakdown.GpuRatedWatt:0} W"
-                + $" × {DescribeGpuLoad(breakdown.GpuLoadPercent)}{countText}",
-
-            GpuPowerSource.IntegratedInPackage =>
-                "0 W · 核显，功耗已计入 CPU 封装（不重复计）",
-
-            _ => "0 W · 型号未识别，**未计入**（可用 GpuFallbackWatts 指定额定功率）",
-        };
+        var time = TimeSpan.FromSeconds(seconds);
+        return time.TotalDays >= 2
+            ? $"{(int)time.TotalDays} 天 {time.Hours} 小时"
+            : time.TotalHours >= 1
+                ? $"{time.TotalHours:0.#} 小时"
+                : $"{time.TotalMinutes:0} 分钟";
     }
-
-    private static string DescribeGpuLoad(double? load)
-        => load is { } value && double.IsFinite(value) ? $"负载 {value:0}%" : "负载不可读，按空闲档计";
-
-    private static string DescribeMemory(
-        SystemPowerBreakdown breakdown, SystemHardwareInfo hardware, SystemPowerInputs? inputs)
-    {
-        var generation = inputs?.MemoryGeneration ?? MemoryGeneration.Unknown;
-        var generationText = generation switch
-        {
-            MemoryGeneration.Ddr3 => "DDR3",
-            MemoryGeneration.Ddr4 => "DDR4",
-            MemoryGeneration.Ddr5 => "DDR5",
-            MemoryGeneration.LpDdr4 => "LPDDR4",
-            MemoryGeneration.LpDdr5 => "LPDDR5",
-            _ => "代际未知（按 DDR4 系数）",
-        };
-
-        var load = inputs?.MemoryLoadPercent;
-        var loadText = load is { } value ? $"占用 {value:0}%" : "占用不可读，按空闲档计";
-        var capacity = hardware.MemoryModuleCount > 0 && hardware.MemoryModuleCapacityGb > 0
-            ? $"{hardware.MemoryModuleCount}×{hardware.MemoryModuleCapacityGb:0.#}G"
-            : $"{hardware.MemoryTotalGb:0.#} GB";
-
-        return $"≈ {breakdown.MemoryWatt:0.#} W · {capacity} {generationText} · {loadText}（型号模型，无传感器）";
-    }
-
-    private static string DescribeStorage(
-        SystemPowerBreakdown breakdown, SystemHardwareInfo hardware, SystemPowerInputs? inputs)
-    {
-        var media = new List<string>();
-        foreach (var kind in hardware.StorageKinds)
-        {
-            var text = MediaText(kind);
-            if (!media.Contains(text))
-                media.Add(text);
-        }
-
-        if (media.Count == 0)
-            media.Add("介质未知");
-
-        return $"≈ {breakdown.StorageWatt:0.#} W · {hardware.DriveCount} 块"
-               + $"{string.Join("+", media)} · {DescribeStorageActivity(inputs)}（型号模型，无传感器）";
-    }
-
-    private static string MediaText(StorageMediaKind kind) => kind switch
-    {
-        StorageMediaKind.Nvme => "NVMe",
-        StorageMediaKind.SataSsd => "SATA SSD",
-        StorageMediaKind.Hdd => "机械盘",
-        _ => "介质未知",
-    };
-
-    private static string DescribeStorageActivity(SystemPowerInputs? inputs)
-    {
-        if (inputs?.StorageThroughputMbps is { } mbps && double.IsFinite(mbps))
-        {
-            // 界面**不许**把模型已判定不可信的读数当正常值展示：越界时如实说明它被丢弃、
-            // 功率按哪个口径算的。否则会出现「显示 269535 MB/s、功率却按空闲算」这种
-            // 界面与模型两套口径的自相矛盾画面 —— v1.21.0 实机取证真的抓到了这一帧。
-            return mbps <= SystemPowerEstimator.MaxPlausibleThroughputMbps
-                ? $"活动 {mbps:0.#} MB/s"
-                : $"活动读数异常（{mbps:0.#} MB/s，超合理域），已按忙率/空闲档计";
-        }
-
-        if (inputs?.StorageBusyPercent is { } busy && double.IsFinite(busy))
-            return $"忙率 {busy:0}%";
-
-        return "活动度不可读，按空闲档计";
-    }
-
-    private static string DescribeFanCount(SystemPowerInputs? inputs)
-        => inputs is { ActiveFanCount: > 0 } ? $"{inputs.ActiveFanCount} 个转动" : "无转动风扇";
 
     /// <summary>
     /// 翻到上一个 / 下一个月（offsetMonths 为负向前翻）。
@@ -1977,189 +2121,6 @@ public sealed class DashboardViewModel : ObservableObject
             : a.UsagePercent.CompareTo(b.UsagePercent);
 
         return byUsage != 0 ? byUsage : string.CompareOrdinal(a.Id, b.Id);
-    }
-
-    /// <summary>追加一条包温采样，保留最近 60 条。</summary>
-    private void AppendTemperatureHistory(double temperatureC)
-    {
-        _temperatureHistory.Add(temperatureC);
-        if (_temperatureHistory.Count > HeatmapSeconds)
-            _temperatureHistory.RemoveAt(0);
-    }
-
-    /// <summary>
-    /// 发布 Sparkline 序列（v1.19.0 改为双缓冲，稳态零分配）。
-    /// <para>
-    /// 与热力图同一个约束：绑定是依赖属性（AffectsRender），**引用必须变**才会失效视觉，
-    /// 所以这里在两个固定长度的数组之间交替发布，而不是复用同一个实例。
-    /// 长度在历史未填满 60 条时会逐帧增长，那时重建一次双缓冲；填满后不再分配。
-    /// </para>
-    /// </summary>
-    private void PublishPeakSeries()
-    {
-        var count = _temperatureHistory.Count;
-
-        if (_peakSeriesBuffers.Length > 0 && _peakSeriesBuffers[0].Length != count)
-            _peakSeriesBuffers = []; // 长度变化（历史还在长 / 窗口被改）→ 重建
-
-        if (_peakSeriesBuffers.Length == 0)
-            _peakSeriesBuffers = [new double[count], new double[count]];
-
-        var buffer = _peakSeriesBuffers[_peakSeriesIndex];
-        _peakSeriesIndex ^= 1;
-
-        for (var i = 0; i < count; i++)
-            buffer[i] = _temperatureHistory[i];
-
-        PeakSeries = buffer;
-    }
-
-    /// <summary>
-    /// 推进热力图并追加当前采样。
-    /// <para>
-    /// 两点关键：
-    /// 1) 每次必须产出**新的数组实例**。Heatmap 绑定到 HeatMapControl.RowsData（依赖属性，AffectsRender）。
-    ///    若原地改同一个数组再触发 PropertyChanged，WPF 按引用比较判定"值未变化"→ 不失效视觉，
-    ///    于是 OnRender 只在首帧跑一次，整片热力图冻结不滚动。
-    /// 2) 列推进按**墙钟秒**而非刷新次数计算，保证 60 列恒等于 60 秒：
-    ///    刷新周期 500ms 时同一秒内只刷新最右一格（否则 60 列会缩成 30 秒）；
-    ///    周期 2000ms 时一次补足跳过的秒（避免时间轴被拉长成 120 秒）。
-    /// </para>
-    /// </summary>
-    private void PushHeatmap(IReadOnlyList<CpuCoreSnapshot> snapshots, bool prefill = false)
-    {
-        // 行数必须以**逻辑线程**为准（与 HeatmapLabels 同源），不能取 snapshots.Count（物理核数）：
-        // 取核数时 8 核 16 线程只画 8 行，HeatMapControl 会把标签截到 8 条，C4~C7 在热力图里整体消失。
-        var rowCount = UpdateHeatRows(snapshots);
-        if (rowCount == 0)
-            return;
-
-        // 双缓冲（v1.19.0）：备用组的形状必须与当前组一致才谈得上"搬运历史"，
-        // 因此 reuse 以**两组**都对齐为准。行数变化时两组一起重建，并让时间锚归零
-        // → 下一帧走 advance = HeatmapSeconds 全量铺满，新矩阵不会掺进旧行的残留格子。
-        var reuse = _heatmap.Length == rowCount && _heatmapSpare.Length == rowCount;
-        var now = DateTime.UtcNow;
-
-        // 需要新推入的列数（0 = 同一秒内，仅刷新最右一格）。
-        int advance;
-        if (prefill || !reuse || _heatmapLastUtc == DateTime.MinValue)
-        {
-            advance = HeatmapSeconds;
-            _heatmapLastUtc = now;
-        }
-        else
-        {
-            var elapsed = (now - _heatmapLastUtc).TotalSeconds;
-            if (elapsed >= HeatmapSeconds)
-            {
-                advance = HeatmapSeconds;
-                _heatmapLastUtc = now;
-            }
-            else
-            {
-                advance = (int)elapsed;
-                if (advance > 0)
-                    _heatmapLastUtc = _heatmapLastUtc.AddSeconds(advance);
-            }
-        }
-
-        var fill = advance > 0 ? advance : 1; // 未满一秒时至少覆盖最右一格
-
-        double[][] next;
-        if (reuse)
-        {
-            next = _heatmapSpare;
-            for (var r = 0; r < rowCount; r++)
-            {
-                var row = next[r];
-                // 重叠区间用 Array.Copy 是安全的（同数组内 memmove 语义）——这正是
-                // "把历史整体左移 advance 列"的原地写法，不必每帧新建整块矩阵。
-                if (advance < HeatmapSeconds)
-                    Array.Copy(_heatmap[r], advance, row, 0, HeatmapSeconds - advance);
-
-                var value = _heatRows[r].Usage;
-                for (var c = HeatmapSeconds - fill; c < HeatmapSeconds; c++)
-                    row[c] = value;
-            }
-
-            _heatmapSpare = _heatmap; // 旧的那组转为备用
-        }
-        else
-        {
-            next = AllocateHeatmapRows(rowCount);
-            _heatmapSpare = AllocateHeatmapRows(rowCount);
-
-            for (var r = 0; r < rowCount; r++)
-            {
-                var value = _heatRows[r].Usage;
-                for (var c = HeatmapSeconds - fill; c < HeatmapSeconds; c++)
-                    next[r][c] = value;
-            }
-        }
-
-        // 必须是**新的数组实例**：RowsData 是依赖属性（AffectsRender），原地改写同一实例
-        // 会被 WPF 按引用判定为"未变化"→ 视觉不失效 → 热力图冻结不滚动（v1.5.x 实测教训）。
-        // 双缓冲两组交替发布，既满足这条约束又不产生每帧垃圾。
-        //
-        // **不要**在这里再写一次 `_heatmap = next;`（v1.19.0 实测踩过）：
-        // 属性 setter 走的是 SetProperty(ref _heatmap, value)，它按**引用比较**决定要不要发
-        // PropertyChanged。若先手动把字段赋成 next，setter 里就成了"新值 == 旧值"→ 永不通知
-        // → HeatMapControl.RowsData 恒为 null → OnRender 开头的空值判断直接 return
-        // → 热力图整片空白（连底板都不画）。
-        // 阴险之处：**只看字段与行数的自检拦不住这个缺陷** —— 字段是真的被更新了、行数也对得上，
-        // 坏掉的只有"通知没发出去"这一件事。v1.20.0 之前那个「三者行数必须一致」的运行期不变量
-        // 正是因此一路通过（它已随运行日志功能一起移除：唯一输出通道就是日志，给不出可观察的结论）。
-        // 这条只能靠截图发现，回归保护在 .workbuddy 的热力图几何取证脚本里。
-        Heatmap = next;
-    }
-
-    /// <summary>按行数申请一组行数组（每行 <see cref="HeatmapSeconds"/> 列）。仅形状变化时调用。</summary>
-    private static double[][] AllocateHeatmapRows(int rowCount)
-    {
-        var rows = new double[rowCount][];
-        for (var r = 0; r < rowCount; r++)
-            rows[r] = new double[HeatmapSeconds];
-
-        return rows;
-    }
-
-    /// <summary>刷新热力图行标签（逗号分隔）。行标签与 RowsData 行数同源，保证逐行对齐不被截断。</summary>
-    private void RefreshHeatmapLabels()
-        => HeatmapLabels = string.Join(",", _heatRows.Select(r => r.Id));
-
-    /// <summary>
-    /// 把最新快照写入热力图行源，返回行数。
-    /// 行数只在平台数量变化时重建数组，稳态下纯就地赋值，无分配。
-    /// </summary>
-    private int UpdateHeatRows(IReadOnlyList<CpuCoreSnapshot> snapshots)
-    {
-        var needed = 0;
-        foreach (var snapshot in snapshots)
-            needed += snapshot.Threads.Count > 0 ? snapshot.Threads.Count : 1;
-
-        if (needed == 0)
-            return 0;
-
-        if (_heatRows.Length != needed)
-        {
-            _heatRows = new (string, double)[needed];
-            RefreshHeatmapLabels(); // 行数变化（平台 / 线程数变化）时标签同步重建，避免与数据行数错位。
-        }
-
-        var index = 0;
-        foreach (var snapshot in snapshots)
-        {
-            if (snapshot.Threads.Count == 0)
-            {
-                _heatRows[index++] = (snapshot.Id, snapshot.UsagePercent);
-                continue;
-            }
-
-            foreach (var thread in snapshot.Threads)
-                _heatRows[index++] = (thread.Id, thread.UsagePercent);
-        }
-
-        return needed;
     }
 
     /// <summary>温度文本（不可用显示 "-"）。</summary>

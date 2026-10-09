@@ -53,6 +53,19 @@ public sealed class DashboardCoreVm : ObservableObject
     /// <summary>核心显示名（P0 / E2 / C5 / CCD 内连续编号）。</summary>
     public string Id { get; }
 
+    /// <summary>
+    /// 累积等级状态（v1.22.0）。**独立于健康度** —— 角标位已被 0–100 健康度占用，
+    /// 两者语义又完全无关（等级= 陪你跑了多久，健康度 = 硬件状态），
+    /// 挤在一起会让人以为「等级低 = 机器坏了」。故等级走 Tile 底部独立一行。
+    /// </summary>
+    public CoreLevelVm Level { get; } = new();
+
+    /// <summary>
+    /// 行为角色（v1.22.0）。与 <see cref="Level"/> 并列而非替代：等级是「跑了多久」，
+    /// 角色是「怎么跑的」。二者共同构成"挂机"的可读性。
+    /// </summary>
+    public CoreRoleVm Role { get; } = new();
+
     /// <summary>是否使用紧凑卡片布局（E-Core，或分段较多时整体收一档）。</summary>
     public bool IsCompact { get; }
 
@@ -104,7 +117,7 @@ public sealed class DashboardCoreVm : ObservableObject
     }
 
     /// <summary>状态标签（摸鱼/空闲/工作/忙碌/高负载/爆肝）。</summary>
-    public string StatusLabel
+        public string StatusLabel
     {
         get => _statusLabel;
         private set => SetProperty(ref _statusLabel, value);
@@ -189,7 +202,15 @@ public sealed class DashboardCoreVm : ObservableObject
         HealthTipText = CoreHealthFormatter.BuildCoreTooltip(score);
         HealthBrush = CoreHealthPalette.Foreground(grade);
         HealthDimBrush = CoreHealthPalette.Background(grade);
+
+        // 焦点展开详情（v1.22.0）：与角标同一份数据、同一节奏，只是摊得更开。
+        FocusDetail.Apply(score);
     }
+
+    /// <summary>
+    /// 焦点态展开详情（健康度三分量 + 证据 + 降级原因）。与角标同源，见 <see cref="ApplyHealth"/>。
+    /// </summary>
+    public CoreFocusDetailVm FocusDetail { get; } = new();
 
     /// <summary>
     /// 应用**实时**核心快照。画刷全部取自冻结缓存，仅状态切换时才更新底色。

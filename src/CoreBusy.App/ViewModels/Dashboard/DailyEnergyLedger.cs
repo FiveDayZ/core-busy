@@ -62,6 +62,29 @@ public sealed class DailyEnergyLedger
     /// <summary>某天是否有任何功耗读数。</summary>
     public bool HasRecord(DateOnly day) => _days.ContainsKey(day);
 
+    /// <summary>账本覆盖的天数（供"历史累计"提示说明统计窗口）。</summary>
+    public int DayCount => _days.Count;
+
+    /// <summary>账本全部日期的累计能耗（焦耳）。保留期内逐日求和 —— 调用方在 Tooltip 里使用，每帧一次可承受。</summary>
+    public double TotalJoules()
+    {
+        double total = 0;
+        foreach (var record in _days.Values)
+            total += record.Joules;
+
+        return total;
+    }
+
+    /// <summary>账本全部日期的有效观测秒数（"历史累计"的诚实分母）。</summary>
+    public double TotalSeconds()
+    {
+        double total = 0;
+        foreach (var record in _days.Values)
+            total += record.Seconds;
+
+        return total;
+    }
+
     /// <summary>
     /// 记一次有效读数，并返回**自然日是否刚发生翻转**（界面据此立刻重算网格）。
     /// </summary>

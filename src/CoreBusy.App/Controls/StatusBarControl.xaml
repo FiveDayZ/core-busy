@@ -2,9 +2,10 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!--
-        状态栏图标三处：① 品牌标记（芯片）② 运行状态（脉冲，语义色）③ 运行时长（时钟）。
-        脉冲图标同时承担「状态点」职责，取代原先恒为绿色的圆点 —— 那个圆点在性能模式下
-        不会换色，是失真的（文案说「性能模式」，颜色仍报「正常」）。
+        状态栏（v1.26.1）：左 = 品牌标记 + 版本号 + 内存/显卡/磁盘（大小 · 占用 · 温度），
+        右 = 运行状态 + 运行时长 + 整机能耗（逐部件估算，带「≈」）。
+        三项硬件各自独立可见性 —— 来源缺失时整项连同前置分隔线一起折叠，
+        不会留下"一根悬空竖线"或"有图标无数据"。详细口径在悬浮提示里。
     -->
     <Grid Margin="2,0">
         <Grid.ColumnDefinitions>
@@ -12,23 +13,36 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!--
-            左：品牌标记 + 版本号 + 整机硬件状态（v1.16.0 重排）。
-            产品名与 AMD/INTEL EDITION 徽章移除（右上角品牌区块保留），只留版本号，
-            腾出宽度显示内存 / 显卡 / 磁盘的「大小 · 占用 · 温度」。
-            三项各自独立可见性 —— 来源缺失时整项连同前置分隔线一起折叠，
-            不会留下"一根悬空竖线"或"有图标无数据"。详细口径在悬浮提示里。
-        -->
+        <!--  左：品牌标记 + 版本号 + 整机硬件状态  -->
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-            <Border Width="15" Height="15" CornerRadius="4"
-                    Background="{DynamicResource CoreBusyAccentDimBrush}" VerticalAlignment="Center">
-                <Path Data="{StaticResource IconChip}" Stretch="Uniform" Width="10" Height="10"
-                      Fill="{DynamicResource CoreBusyAccentBrush}"
-                      HorizontalAlignment="Center" VerticalAlignment="Center" />
-            </Border>
+            <!--  v1.26.4：品牌角标 = 新图标的「Die 2×2 负载格」矢量版（随品牌主题联动）  -->
+            <Grid Width="15" Height="15" VerticalAlignment="Center">
+                <Border CornerRadius="3.5" Background="{DynamicResource CoreBusyAccentDimBrush}" />
+                <UniformGrid Columns="2" Rows="2" Margin="3">
+                    <Border CornerRadius="1" Margin="0.75" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.35" />
+                    <Border CornerRadius="1" Margin="0.75" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.55" />
+                    <Border CornerRadius="1" Margin="0.75" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.75" />
+                    <Border CornerRadius="1" Margin="0.75" Background="{DynamicResource CoreBusyAccentBrush}" />
+                </UniformGrid>
+            </Grid>
             <TextBlock Text="{Binding VersionText}" FontSize="10.5" Margin="7,0,0,0"
                        Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
                        Typography.NumeralAlignment="Tabular" />
+
+            <!--  显卡：短型号 + 显存 + 占用 + 温度（v1.26.5 起按 显卡→内存→硬盘 排序）  -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                        Visibility="{Binding GpuVisibility}"
+                        ToolTip="{Binding GpuHintText}" ToolTipService.ShowDuration="20000">
+                <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
+                        Margin="7,0" VerticalAlignment="Center" />
+                <Path Data="{StaticResource IconGpu}" Stretch="Uniform" Width="11" Height="11"
+                      Stroke="{DynamicResource CoreBusyTextWeakBrush}" StrokeThickness="1.5" Fill="{x:Null}"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                      VerticalAlignment="Center" />
+                <TextBlock Text="{Binding GpuText}" FontSize="10.5" Margin="5,0,0,0"
+                           Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
+                           Typography.NumeralAlignment="Tabular" />
+            </StackPanel>
 
             <!--  物理内存：已用/总量 + 占用率（唯一每帧变化的动态项，故用稍亮的次级色）  -->
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
@@ -42,21 +56,6 @@
                       VerticalAlignment="Center" />
                 <TextBlock Text="{Binding MemoryText}" FontSize="10.5" Margin="5,0,0,0"
                            Foreground="{DynamicResource CoreBusyTextSecondaryBrush}" VerticalAlignment="Center"
-                           Typography.NumeralAlignment="Tabular" />
-            </StackPanel>
-
-            <!--  显卡：短型号 + 显存 + 占用 + 温度  -->
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
-                        Visibility="{Binding GpuVisibility}"
-                        ToolTip="{Binding GpuHintText}" ToolTipService.ShowDuration="20000">
-                <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
-                        Margin="7,0" VerticalAlignment="Center" />
-                <Path Data="{StaticResource IconGpu}" Stretch="Uniform" Width="11" Height="11"
-                      Stroke="{DynamicResource CoreBusyTextWeakBrush}" StrokeThickness="1.5" Fill="{x:Null}"
-                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                      VerticalAlignment="Center" />
-                <TextBlock Text="{Binding GpuText}" FontSize="10.5" Margin="5,0,0,0"
-                           Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
                            Typography.NumeralAlignment="Tabular" />
             </StackPanel>
 
@@ -76,75 +75,30 @@
             </StackPanel>
         </StackPanel>
 
-        <!--  右：运行状态药丸 + 运行时长  -->
+        <!--  右：运行时长（悬浮含历史累计，v1.26.5）+ 整机能耗（悬浮含历史累计）  -->
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Border CornerRadius="9" Padding="7,2" VerticalAlignment="Center"
-                    Background="{Binding StatusDimBrush}">
-                <StackPanel Orientation="Horizontal">
-                    <Path Data="{StaticResource IconPulse}" Stretch="Uniform" Width="11" Height="11"
-                          Stroke="{Binding StatusBrush}" StrokeThickness="1.8" Fill="{x:Null}"
-                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                          VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding StatusText}" FontSize="11" Margin="5,0,0,0"
-                               Foreground="{Binding StatusBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-            </Border>
-
-            <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
-                    Margin="10,0" VerticalAlignment="Center" />
-
-            <Path Data="{StaticResource IconClock}" Stretch="Uniform" Width="11" Height="11"
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                        ToolTip="{Binding UptimeHintText}" ToolTipService.ShowDuration="20000">
+                <Path Data="{StaticResource IconClock}" Stretch="Uniform" Width="11" Height="11"
                   Stroke="{DynamicResource CoreBusyTextWeakBrush}" StrokeThickness="1.6" Fill="{x:Null}"
                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                   VerticalAlignment="Center" />
-            <TextBlock Text="运行" FontSize="11" Margin="5,0,0,0"
+            <TextBlock Text="累计" FontSize="11" Margin="5,0,0,0"
                        Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
             <TextBlock Text="{Binding UptimeText}" FontSize="11" FontWeight="SemiBold" Margin="5,0,0,0"
                        Foreground="{DynamicResource CoreBusyTextPrimaryBrush}" VerticalAlignment="Center"
                        Typography.NumeralAlignment="Tabular" />
+            </StackPanel>
 
             <!--
-                运行期累计能耗（v1.20.0 起并排两项，中间用分割线分开）：
-                左 = CPU 封装能耗（传感器实测），右 = 整机能耗（逐部件估算，v1.20.1 起
-                为 CPU 实测 + 显卡/内存/硬盘/风扇/主板 逐项相加，各部件"能测就测、
-                测不到按型号估"）。
-                两路单位同量级、同样自动换档，若不区分就会互相冒充 —— 故左侧显式标 CPU、
-                右侧显式标「整机」，且整机数值自带「≈」前缀（标记由 VM 拼，不在这里补）。
-                数据源依赖硬件传感器，缺失时各自转弱色表示「已停止更新」。
-                悬浮提示逐项给出统计窗口与覆盖率，整机那路另给**逐部件构成**（每项标注
-                实测还是模型、用的什么额定值/系数）。
+                整机能耗（逐部件估算）：CPU 实测 + 显卡/内存/硬盘/风扇/主板 逐项相加，
+                各部件"能测就测、测不到按型号估"。数值自带「≈」前缀（标记由 VM 拼，不在这里补）。
+                依赖硬件传感器，缺失时转弱色表示「已停止更新」。
+                悬浮提示给出统计窗口、覆盖率与**逐部件构成**（每项标注实测还是模型、
+                用的什么额定值/系数）。
             -->
             <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
                     Margin="10,0" VerticalAlignment="Center" />
-
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
-                        ToolTip="{Binding EnergyHintText}" ToolTipService.ShowDuration="20000">
-                <Path Data="{StaticResource IconBolt}" Stretch="Uniform" Width="9" Height="11"
-                      Fill="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
-                <TextBlock Text="CPU" FontSize="11" Margin="5,0,0,0"
-                           Foreground="{DynamicResource CoreBusyTextWeakBrush}" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding EnergyText}" FontSize="11" FontWeight="SemiBold" Margin="5,0,0,0"
-                           VerticalAlignment="Center" Typography.NumeralAlignment="Tabular">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextPrimaryBrush}" />
-                            <Style.Triggers>
-                                <!--
-                                    无有效功耗读数时不拿伪值冒充：数值转弱色，表示这是
-                                    冻结的历史值（或从未取到），而非仍在累积的实时数。
-                                -->
-                                <DataTrigger Binding="{Binding EnergyIsLive}" Value="False">
-                                    <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextWeakBrush}" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
-            </StackPanel>
-
-            <!--  分割线：CPU 能耗 / 整机能耗的分界（两路口径不同，必须视觉上分开）  -->
-            <Border Width="1" Height="11" Background="{DynamicResource CoreBusyBorderWeakBrush}"
-                    Margin="8,0" VerticalAlignment="Center" />
 
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                         ToolTip="{Binding SystemEnergyHintText}" ToolTipService.ShowDuration="20000">
@@ -156,7 +110,7 @@
                         <Style TargetType="TextBlock">
                             <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextSecondaryBrush}" />
                             <Style.Triggers>
-                                <!--  同 CPU 那路：估算路也以「能否拿到封装读数」为实时性的唯一判据  -->
+                                <!--  以「能否拿到封装读数」为实时性的唯一判据  -->
                                 <DataTrigger Binding="{Binding SystemEnergyIsLive}" Value="False">
                                     <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextWeakBrush}" />
                                 </DataTrigger>

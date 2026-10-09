@@ -86,6 +86,10 @@ public partial class SettingsWindow : Window
         SensorsCheck.IsChecked = settings.SensorsEnabled;
         GameCheck.IsChecked = settings.GameDetectionEnabled;
         CloseToTrayCheck.IsChecked = settings.CloseToTray;
+
+        // 开机启动以注册表实况回显（v1.26.5）：settings.json 不记这份状态，
+        // 用户在任务管理器里手动禁用后这里必须如实显示未启用。
+        AutoStartCheck.IsChecked = Services.AutoStartService.IsEnabled();
     }
 
     /// <summary>填充「性能优化」页：能力状态、电源预设、规则列表、游戏模式。</summary>
@@ -320,6 +324,9 @@ public partial class SettingsWindow : Window
             CloseToTray = CloseToTrayCheck.IsChecked == true,
             Optimization = optimization,
         };
+
+        // 开机启动（v1.26.5）：在保存设置的同一动作里落注册表，勾选状态即生效。
+        Services.AutoStartService.Set(AutoStartCheck.IsChecked == true);
 
         DialogResult = true;
     }

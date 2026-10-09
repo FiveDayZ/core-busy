@@ -7,172 +7,255 @@
         <controls:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
     </UserControl.Resources>
 
-    <!--  刻意不使用 DropShadowEffect：16 张卡每帧模糊重渲染是卡顿主因，
-          高负载强调由红色描边 + 红调底色承担  -->
+    <!--
+        芯片造型角色卡（v1.26.0）：每颗核心 = PCB 主板上的一颗芯片。
+        结构：上引脚排 / 芯片封装本体（内容）/ 下引脚排。
+        引脚用虚线描边线模拟（一排等宽金脚）；封装左上角是 1 脚定位点（真芯片惯例）。
+        本体仍绑定 TileBackground/TileBorderBrush —— 高负载红色强调语义保留。
+        刻意不使用 DropShadowEffect：软件渲染下每帧模糊重渲染是卡顿主因。
+    -->
     <Grid>
 
-        <!--  标准卡片（P-Core）  -->
-        <Border x:Name="NormalPanel" Background="{Binding TileBackground}"
-                BorderBrush="{Binding TileBorderBrush}" BorderThickness="1"
-                CornerRadius="6" Padding="9,6,9,7">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
+        <!--  标准芯片（P-Core）  -->
+        <Grid x:Name="NormalPanel">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-                <!--  左侧状态色条：一列扫下来即可判断各核忙闲，取代原先的表情徽章  -->
-                <Border Grid.Column="0" Width="3" CornerRadius="1.5" Margin="0,1,8,1"
-                        Background="{Binding StatusBrush}" />
+            <!--  上引脚排：虚线描边 = 一排等距金脚  -->
+            <Line Grid.Row="0" Stretch="Fill" X1="0" X2="1" Y1="0" Y2="0"
+                  Stroke="#B08D3E" StrokeThickness="3" StrokeDashArray="0.55 0.6"
+                  StrokeDashCap="Flat" StrokeStartLineCap="Flat" StrokeEndLineCap="Flat"
+                  Margin="12,0" VerticalAlignment="Center" />
 
-                <Grid Grid.Column="1">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+            <!--  芯片封装本体  -->
+            <Border Grid.Row="1" Margin="0,3" Background="{Binding TileBackground}"
+                    BorderBrush="{Binding TileBorderBrush}" BorderThickness="1"
+                    CornerRadius="4" Padding="9,6,9,7">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-                    <!--  核心号 + 使用率  -->
-                    <Grid Grid.Row="0">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Id}" FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+                    <!--  左侧状态色条：一列扫下来即可判断各核忙闲（相当于状态 LED）  -->
+                    <Border Grid.Column="0" Width="3" CornerRadius="1.5" Margin="0,1,8,1"
+                            Background="{Binding StatusBrush}" />
+
+                    <Grid Grid.Column="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!--  行0：1 脚定位点 + 丝印核心号 + 动作状态（摸鱼/工作/爆肝）  -->
+                        <Grid Grid.Row="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="5" Height="5" Fill="#B08D3E"
+                                         VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Id}" FontSize="11" FontWeight="SemiBold"
+                                           Margin="5,0,0,0"
+                                           Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding StatusLabel}" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
                                        VerticalAlignment="Center" />
-                            <!--  健康度徽章（v1.17.0）。只放一个数字、不加"健康"二字：
-                                  卡片横向空间有限，而颜色分级 + 悬浮说明已足够消歧。
-                                  未判定时是纯 "-"，与项目全线"读不到就不猜"的约定一致。  -->
-                            <Border Margin="5,0,0,0" Padding="4,1" CornerRadius="4"
-                                    Background="{Binding HealthDimBrush}"
-                                    VerticalAlignment="Center"
-                                    ToolTip="{Binding HealthTipText}" ToolTipService.ShowDuration="20000">
-                                <TextBlock Text="{Binding HealthText}" FontSize="10" FontWeight="SemiBold"
-                                           Foreground="{Binding HealthBrush}" VerticalAlignment="Center"
-                                           Typography.NumeralAlignment="Tabular" />
-                            </Border>
-                        </StackPanel>
-                        <TextBlock Text="{Binding UsageText}" FontSize="18" FontWeight="Bold"
-                                   Foreground="{Binding UsageTextBrush}" HorizontalAlignment="Right"
-                                   Typography.NumeralAlignment="Tabular" />
-                    </Grid>
+                        </Grid>
 
-                    <controls:SegmentBar Grid.Row="1" Height="6" Segments="12" Margin="0,4,0,0"
-                                         Visibility="{Binding ShowAggregateBar, Converter={StaticResource BoolToVis}}"
-                                         Value="{Binding Usage, Mode=OneWay}"
-                                         FillBrush="{Binding UsageBrush}"
-                                         EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
-
-                    <!--  核内线程明细：SMT 双线程核逐条展开（T0/T1），单线程核折叠不占位  -->
-                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Threads}" Margin="0,4,0,0"
-                                  Visibility="{Binding ShowThreads, Converter={StaticResource BoolToVis}}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="0,0,0,2" ToolTip="{Binding UsageText}">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Label}" FontSize="8" Width="13"
-                                               Foreground="{StaticResource CoreBusyTextWeakBrush}"
-                                               VerticalAlignment="Center" />
-                                    <controls:MiniBar Grid.Column="1" Height="4" VerticalAlignment="Center"
-                                                      Value="{Binding Usage, Mode=OneWay}"
-                                                      FillBrush="{Binding UsageBrush}"
-                                                      TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                        <!--  行1+2：Die 区（等级大字 + 阶段 + 性格 + EXP 进度）—— 封装中央的芯  -->
+                        <Border Grid.Row="1" Grid.RowSpan="2" Background="#22000000"
+                                CornerRadius="3" Padding="5,4" Margin="0,4,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Level.LevelText}" FontSize="19" FontWeight="Bold"
+                                                   Foreground="{StaticResource CoreBusyAccentBrush}"
+                                                   Typography.NumeralAlignment="Tabular" />
+                                        <TextBlock Text="{Binding Level.StageText}" FontSize="10" Margin="6,0,0,2"
+                                                   Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+                                                   VerticalAlignment="Bottom" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding Role.Label}" FontSize="10"
+                                               Foreground="{Binding Role.AccentBrush}"
+                                               HorizontalAlignment="Right" VerticalAlignment="Center" />
                                 </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
 
-                    <!--  频率 + 状态标签（仅着色文字，不再使用底色药丸）  -->
-                    <Grid Grid.Row="2" Margin="0,4,0,0">
-                        <TextBlock Text="{Binding FreqText}" FontSize="10.5" HorizontalAlignment="Left"
-                                   Foreground="{StaticResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
-                                   Typography.NumeralAlignment="Tabular" />
-                        <TextBlock Text="{Binding StatusLabel}" FontSize="10.5" FontWeight="SemiBold"
-                                   Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
-                                   VerticalAlignment="Center" />
+                                <controls:SegmentBar Height="6" Segments="16" Margin="0,4,0,0"
+                                                     Value="{Binding Level.Progress, Mode=OneWay}"
+                                                     FillBrush="{StaticResource CoreBusyAccentBrush}"
+                                                     EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
+                            </StackPanel>
+                        </Border>
+
+                        <!--  行3：喂食行 = 负载（占用率 + 频率）  -->
+                        <Grid Grid.Row="3" Margin="0,5,0,0">
+                            <TextBlock Text="{Binding UsageText}" FontSize="11.5" FontWeight="SemiBold"
+                                       Foreground="{Binding UsageTextBrush}" HorizontalAlignment="Left"
+                                       Typography.NumeralAlignment="Tabular" />
+                            <TextBlock Text="{Binding FreqText}" FontSize="10" HorizontalAlignment="Right"
+                                       Foreground="{StaticResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
+                                       Typography.NumeralAlignment="Tabular" />
+                        </Grid>
+
+                        <!--  行4：负载明细——核心级聚合条，或 SMT 双线程逐条展开（互斥）  -->
+                        <controls:SegmentBar Grid.Row="4" Height="5" Segments="12" Margin="0,3,0,0"
+                                             Visibility="{Binding ShowAggregateBar, Converter={StaticResource BoolToVis}}"
+                                             Value="{Binding Usage, Mode=OneWay}"
+                                             FillBrush="{Binding UsageBrush}"
+                                             EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
+
+                        <ItemsControl Grid.Row="4" ItemsSource="{Binding Threads}" Margin="0,3,0,0"
+                                      Visibility="{Binding ShowThreads, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,0,0,2" ToolTip="{Binding UsageText}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Label}" FontSize="8" Width="13"
+                                                   Foreground="{StaticResource CoreBusyTextWeakBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <controls:MiniBar Grid.Column="1" Height="4" VerticalAlignment="Center"
+                                                          Value="{Binding Usage, Mode=OneWay}"
+                                                          FillBrush="{Binding UsageBrush}"
+                                                          TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </Grid>
                 </Grid>
-            </Grid>
-        </Border>
+            </Border>
 
-        <!--  紧凑卡片（E-Core，或分段较多时整体收一档；结构一致，字号与内距各收一档）  -->
-        <Border x:Name="CompactPanel" Background="{Binding TileBackground}"
-                BorderBrush="{Binding TileBorderBrush}" BorderThickness="1"
-                CornerRadius="6" Padding="7,5,7,6"
-                Visibility="Collapsed">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
+            <!--  下引脚排  -->
+            <Line Grid.Row="2" Stretch="Fill" X1="0" X2="1" Y1="0" Y2="0"
+                  Stroke="#B08D3E" StrokeThickness="3" StrokeDashArray="0.55 0.6"
+                  StrokeDashCap="Flat" StrokeStartLineCap="Flat" StrokeEndLineCap="Flat"
+                  Margin="12,0" VerticalAlignment="Center" />
+        </Grid>
 
-                <Border Grid.Column="0" Width="2.5" CornerRadius="1.25" Margin="0,1,6,1"
-                        Background="{Binding StatusBrush}" />
+        <!--  紧凑芯片（E-Core，或分段较多时整体收一档；结构一致，字号与内距各收一档）  -->
+        <Grid x:Name="CompactPanel" Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-                <Grid Grid.Column="1">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+            <Line Grid.Row="0" Stretch="Fill" X1="0" X2="1" Y1="0" Y2="0"
+                  Stroke="#B08D3E" StrokeThickness="2.5" StrokeDashArray="0.5 0.55"
+                  StrokeDashCap="Flat" StrokeStartLineCap="Flat" StrokeEndLineCap="Flat"
+                  Margin="10,0" VerticalAlignment="Center" />
 
-                    <Grid Grid.Row="0">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Id}" FontSize="10" FontWeight="SemiBold"
-                                       Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+            <Border Grid.Row="1" Margin="0,2.5" Background="{Binding TileBackground}"
+                    BorderBrush="{Binding TileBorderBrush}" BorderThickness="1"
+                    CornerRadius="4" Padding="7,5,7,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Width="2.5" CornerRadius="1.25" Margin="0,1,6,1"
+                            Background="{Binding StatusBrush}" />
+
+                    <Grid Grid.Column="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="4" Height="4" Fill="#B08D3E"
+                                         VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Id}" FontSize="10" FontWeight="SemiBold"
+                                           Margin="4,0,0,0"
+                                           Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding StatusLabel}" FontSize="9.5" FontWeight="SemiBold"
+                                       Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
                                        VerticalAlignment="Center" />
-                            <Border Margin="4,0,0,0" Padding="3.5,0.5" CornerRadius="3.5"
-                                    Background="{Binding HealthDimBrush}"
-                                    VerticalAlignment="Center"
-                                    ToolTip="{Binding HealthTipText}" ToolTipService.ShowDuration="20000">
-                                <TextBlock Text="{Binding HealthText}" FontSize="9" FontWeight="SemiBold"
-                                           Foreground="{Binding HealthBrush}" VerticalAlignment="Center"
-                                           Typography.NumeralAlignment="Tabular" />
-                            </Border>
-                        </StackPanel>
-                        <TextBlock Text="{Binding UsageText}" FontSize="15" FontWeight="Bold"
-                                   Foreground="{Binding UsageTextBrush}" HorizontalAlignment="Right"
-                                   Typography.NumeralAlignment="Tabular" />
-                    </Grid>
+                        </Grid>
 
-                    <controls:SegmentBar Grid.Row="1" Height="5" Segments="12" Margin="0,3,0,0"
-                                         Visibility="{Binding ShowAggregateBar, Converter={StaticResource BoolToVis}}"
-                                         Value="{Binding Usage, Mode=OneWay}"
-                                         FillBrush="{Binding UsageBrush}"
-                                         EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
-
-                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Threads}" Margin="0,3,0,0"
-                                  Visibility="{Binding ShowThreads, Converter={StaticResource BoolToVis}}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="0,0,0,1.5" ToolTip="{Binding UsageText}">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Label}" FontSize="7.5" Width="12"
-                                               Foreground="{StaticResource CoreBusyTextWeakBrush}"
-                                               VerticalAlignment="Center" />
-                                    <controls:MiniBar Grid.Column="1" Height="3.5" VerticalAlignment="Center"
-                                                      Value="{Binding Usage, Mode=OneWay}"
-                                                      FillBrush="{Binding UsageBrush}"
-                                                      TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                        <Border Grid.Row="1" Grid.RowSpan="2" Background="#22000000"
+                                CornerRadius="3" Padding="4,3" Margin="0,3,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Level.LevelText}" FontSize="16" FontWeight="Bold"
+                                                   Foreground="{StaticResource CoreBusyAccentBrush}"
+                                                   Typography.NumeralAlignment="Tabular" />
+                                        <TextBlock Text="{Binding Level.StageText}" FontSize="9" Margin="5,0,0,1"
+                                                   Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
+                                                   VerticalAlignment="Bottom" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding Role.Label}" FontSize="9"
+                                               Foreground="{Binding Role.AccentBrush}"
+                                               HorizontalAlignment="Right" VerticalAlignment="Center" />
                                 </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
 
-                    <Grid Grid.Row="2" Margin="0,3,0,0">
-                        <TextBlock Text="{Binding FreqText}" FontSize="9.5" HorizontalAlignment="Left"
-                                   Foreground="{StaticResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
-                                   Typography.NumeralAlignment="Tabular" />
-                        <TextBlock Text="{Binding StatusLabel}" FontSize="9.5" FontWeight="SemiBold"
-                                   Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
-                                   VerticalAlignment="Center" />
+                                <controls:SegmentBar Height="5" Segments="16" Margin="0,3,0,0"
+                                                     Value="{Binding Level.Progress, Mode=OneWay}"
+                                                     FillBrush="{StaticResource CoreBusyAccentBrush}"
+                                                     EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Grid Grid.Row="3" Margin="0,4,0,0">
+                            <TextBlock Text="{Binding UsageText}" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{Binding UsageTextBrush}" HorizontalAlignment="Left"
+                                       Typography.NumeralAlignment="Tabular" />
+                            <TextBlock Text="{Binding FreqText}" FontSize="9.5" HorizontalAlignment="Right"
+                                       Foreground="{StaticResource CoreBusyTextWeakBrush}" VerticalAlignment="Center"
+                                       Typography.NumeralAlignment="Tabular" />
+                        </Grid>
+
+                        <controls:SegmentBar Grid.Row="4" Height="4" Segments="12" Margin="0,2.5,0,0"
+                                             Visibility="{Binding ShowAggregateBar, Converter={StaticResource BoolToVis}}"
+                                             Value="{Binding Usage, Mode=OneWay}"
+                                             FillBrush="{Binding UsageBrush}"
+                                             EmptyBrush="{StaticResource CoreBusyTrackBrush}" />
+
+                        <ItemsControl Grid.Row="4" ItemsSource="{Binding Threads}" Margin="0,2.5,0,0"
+                                      Visibility="{Binding ShowThreads, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,0,0,1.5" ToolTip="{Binding UsageText}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Label}" FontSize="7.5" Width="12"
+                                                   Foreground="{StaticResource CoreBusyTextWeakBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <controls:MiniBar Grid.Column="1" Height="3.5" VerticalAlignment="Center"
+                                                          Value="{Binding Usage, Mode=OneWay}"
+                                                          FillBrush="{Binding UsageBrush}"
+                                                          TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </Grid>
                 </Grid>
-            </Grid>
-        </Border>
+            </Border>
+
+            <Line Grid.Row="2" Stretch="Fill" X1="0" X2="1" Y1="0" Y2="0"
+                  Stroke="#B08D3E" StrokeThickness="2.5" StrokeDashArray="0.5 0.55"
+                  StrokeDashCap="Flat" StrokeStartLineCap="Flat" StrokeEndLineCap="Flat"
+                  Margin="10,0" VerticalAlignment="Center" />
+        </Grid>
     </Grid>
 </UserControl>
