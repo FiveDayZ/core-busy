@@ -1,4 +1,4 @@
-﻿namespace CoreBusy.App.ViewModels.Dashboard;
+namespace CoreBusy.App.ViewModels.Dashboard;
 
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -1210,6 +1210,24 @@ public sealed class DashboardViewModel : ObservableObject
     public System.Windows.Visibility CollapseHintVisibility =>
         _focusedCoreId is null ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
 
+    private System.DateTime? _peakTickLastUtc;
+    /// <summary>峰值档上一帧的 UTC 时间戳（v1.30.0），供 NextPeakDt 计算墙钟差。</summary>
+    private System.DateTime? _peakFrameLastUtc;
+
+    /// <summary>
+    /// 峰值档本帧时长（v1.30.0）：刷新节拍的墙钟差（秒），上限 60s。
+    /// 首帧返回 0；进程挂起/传感器休眠恢复后的陈旧节拍不把睡眠记成峰值。
+    /// </summary>
+    private double NextPeakDt()
+    {
+        var nowUtc = System.DateTime.UtcNow;
+        double dt = _peakFrameLastUtc is { } last
+            ? System.Math.Min((nowUtc - last).TotalSeconds, 60.0)
+            : 0.0;
+        _peakFrameLastUtc = nowUtc;
+        return dt;
+    }
+
     private void RefreshCoreLevels(IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
         foreach (var core in snapshots)
@@ -1246,6 +1264,29 @@ public sealed class DashboardViewModel : ObservableObject
             {
                 entry.MaxGhz = core.EffectiveFrequencyGHz;
             }
+
+            // 峰值频率上屏（v1.29.0）：账本 MaxGhz 推给弹卡（NaN 降级"峰值 -"，setter 按值去重，
+            // 只在新高时通知 —— 与"逐项比对再通知"的刷新纪律一致）。
+            vm.ApplyPeakFreq(entry.MaxGhz);
+
+            // 峰值档本帧时长（v1.30.0）：刷新节拍墙钟差，首帧/休眠恢复钳 60s 上限
+            //（休眠中传感器是陈旧读数，不把整段睡眠记成「在峰值档」）。
+            var peakDt = NextPeakDt();
+
+            // 峰值累计持续时长（v1.30.0）：当前有效频率 ≥ 账本峰值（MaxGhz）的 99% 视为
+            // 「在峰值档」，把本帧时长累进账本（只增不减）。峰值带随 MaxGhz 新高收紧 ——
+            // 累计口径是「各历史峰值档时长之和」，与 MaxGhz 的「只升不降」同源。
+            if (peakDt > 0 && !double.IsNaN(entry.MaxGhz)
+                && !double.IsNaN(core.EffectiveFrequencyGHz)
+                && core.EffectiveFrequencyGHz >= entry.MaxGhz * 0.99)
+            {
+                entry.PeakSeconds = double.IsNaN(entry.PeakSeconds)
+                    ? peakDt
+                    : entry.PeakSeconds + peakDt;
+            }
+
+            // 峰值累计上屏（v1.30.0）：与 ApplyPeakFreq 同节奏推送；NaN/非正数降级「-」。
+            vm.ApplyPeakDuration(entry.PeakSeconds);
 
             var level = vm.Level.Level;
             if (level > entry.TotalLevels)
@@ -1470,6 +1511,11 @@ public sealed class DashboardViewModel : ObservableObject
         _healthScores = _healthTracker.Score();
 
         _healthByCore.Clear();
+        // 峰值档累计时长的本帧增量（v1.30.0）：每轮刷新取一次；首帧/休眠恢复钳 60s 上限
+        //（休眠中传感器是陈旧读数，不把整段睡眠记成「在峰值」）。
+        var nowUtc = System.DateTime.UtcNow;
+        _peakTickLastUtc = nowUtc;
+
         foreach (var score in _healthScores)
             _healthByCore[score.CoreId] = score;
 

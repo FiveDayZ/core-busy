@@ -61,10 +61,12 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
     }
 
     /// <summary>
-    /// CPUID 交叉校验（v1.10.1）：GLPI 的物理核分组来自固件 ACPI 表，
-    /// 个别整机固件会把无 SMT 平台误报成 SMT 对（实测 i3-N305 8 核 8 线程被报成 4 核 × 2 线程）。
-    /// CPUID 探针直接读 CPU 内部 APIC ID 层级，与固件无关。两者物理核数不一致且非混合架构时，
-    /// 以 CPUID 为准重建分组并写取证日志；混合架构（P/E 语义依赖 GLPI 的 EfficiencyClass）不改动。
+    /// CPUID 交叉校验（v1.10.1 引入，v1.27.3 混合架构强化）：GLPI 的物理核分组来自固件 ACPI 表，
+    /// 个别整机固件会把无 SMT 平台误报成 SMT 对（实测 i3-N305 8 核 8 线程被报成 4 核 × 2 线程、
+    /// U300 5 核 6 线程被报成 3 核 × 2 线程）。CPUID 探针直接读 CPU 内部 APIC ID 层级，与固件无关。
+    /// 非混合架构：两者物理核数不一致且每核线程数均一时，以 CPUID 为准重建分组并写取证日志。
+    /// 混合架构：探针自带逐逻辑处理器核心类型（CPUID.1AH）时同样可安全改写（分组与 P/E 命名
+    /// 不依赖 GLPI）；探针无类型信息时维持旧行为——P/E 语义依赖 GLPI 的 EfficiencyClass，不改动。
     /// </summary>
     private static List<LogicalProcessorTopology> CrossCheckWithCpuId(List<LogicalProcessorTopology> lps)
     {
@@ -81,18 +83,23 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
 
         var glpiCores = lps.Select(p => p.PhysicalCoreIndex).Distinct().Count();
 
-        // 防呆：CPUID 核心数必须能整除线程数（每核线程数均一），否则数据不可信，不贸然改写。
-        if (probe.CoreCount <= 0 || lps.Count % probe.CoreCount != 0)
+        if (!probe.HasCoreTypes)
         {
-            return lps;
-        }
+            // 防呆：CPUID 核心数必须能整除线程数（每核线程数均一），否则数据不可信，不贸然改写。
+            if (probe.CoreCount <= 0 || lps.Count % probe.CoreCount != 0)
+            {
+                return lps;
+            }
 
-        // 混合架构的 P/E 语义来自 GLPI 的 EfficiencyClass，CPUID 探针不解析核心类型，不参与改写。
-        if (lps.Any(p => p.CoreClass is CoreClass.Performance or CoreClass.Efficiency))
-        {
-            if (glpiCores != probe.CoreCount)
-            return lps;
+            // 混合架构的 P/E 语义来自 GLPI 的 EfficiencyClass，CPUID 探针不解析核心类型，不参与改写。
+            if (lps.Any(p => p.CoreClass is CoreClass.Performance or CoreClass.Efficiency)
+                && glpiCores != probe.CoreCount)
+            {
+                return lps;
+            }
         }
+        // 带类型的探针（混合架构）：分组与 P/E 类别全部来自芯片自报（CPUID.1AH + 1F），
+        // 整除防呆不适用（P 域 2 线程 / E 域 1 线程，核数本就不必整除线程数）。
 
         if (glpiCores == probe.CoreCount)
             return lps;
@@ -100,20 +107,51 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
         // 物理核数不一致 → 以 CPUID 归并为准重建（既覆盖固件虚报 SMT：N 核 1 线程被报成 N/2 核 × 2，
         // 也覆盖反向误报：SMT 对被拆成单线程核）。线程条 / 热力图行数不变（= 逻辑处理器数）。
 
-        var coreIndexOf = new Dictionary<int, int>();
-        var rebuilt = new List<LogicalProcessorTopology>(lps.Count);
-        foreach (var lp in lps.OrderBy(p => probe.CoreIdByOsIndex[p.OsIndex]).ThenBy(p => p.OsIndex))
+        var ordered = lps.OrderBy(p => probe.CoreIdByOsIndex[p.OsIndex]).ThenBy(p => p.OsIndex).ToList();
+        var coreIndexOf = new Dictionary<(CoreClass Type, int CoreId), int>();
+        var groupMembers = new List<List<LogicalProcessorTopology>>();
+        var groupTypes = new List<CoreClass>();
+
+        foreach (var lp in ordered)
         {
             var coreId = probe.CoreIdByOsIndex[lp.OsIndex];
-            if (!coreIndexOf.TryGetValue(coreId, out var index))
-                coreIndexOf[coreId] = index = coreIndexOf.Count;
-
-            rebuilt.Add(lp with
+            var type = probe.CoreTypeByOsIndex is { } types ? types[lp.OsIndex] : lp.CoreClass;
+            var key = (type, coreId);
+            if (!coreIndexOf.TryGetValue(key, out var index))
             {
-                PhysicalCoreIndex = index,
-                DisplayName = $"C{index}",
-                Smt = probe.ThreadsPerCore > 1,
-            });
+                coreIndexOf[key] = index = groupMembers.Count;
+                groupMembers.Add(new List<LogicalProcessorTopology>());
+                groupTypes.Add(type);
+            }
+
+            groupMembers[index].Add(lp);
+        }
+
+        var rebuilt = new List<LogicalProcessorTopology>(lps.Count);
+        int pIndex = 0;
+        int eIndex = 0;
+        int standardIndex = 0;
+
+        for (var g = 0; g < groupMembers.Count; g++)
+        {
+            var type = groupTypes[g];
+            var name = type switch
+            {
+                CoreClass.Performance => $"P{pIndex++}",
+                CoreClass.Efficiency => $"E{eIndex++}",
+                _ => $"C{standardIndex++}",
+            };
+
+            foreach (var lp in groupMembers[g])
+            {
+                rebuilt.Add(lp with
+                {
+                    PhysicalCoreIndex = g,
+                    CoreClass = type,
+                    DisplayName = name,
+                    Smt = groupMembers[g].Count > 1,
+                });
+            }
         }
 
         return rebuilt;

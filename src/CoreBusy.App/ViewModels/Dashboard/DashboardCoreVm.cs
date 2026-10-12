@@ -1,4 +1,4 @@
-﻿namespace CoreBusy.App.ViewModels.Dashboard;
+namespace CoreBusy.App.ViewModels.Dashboard;
 
 using System.Windows.Media;
 using CoreBusy.App.Controls;
@@ -36,10 +36,14 @@ public sealed class DashboardCoreVm : ObservableObject
 
         // 阶段变色（v1.27.2）：等级跨过阶段阈值时，封装边框随成长阶段逐级点亮
         // （高负载红框优先级更高，见 ApplyBorder）。
+        // 戳一戳（v1.28.0）：同一信号驱动小核灵进化换形象。
         Level.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(CoreLevelVm.Level))
+            {
                 ApplyBorder();
+                Poke.OnLevelChanged(Level.Level, Level.IsMaxLevel);
+            }
         };
 
         // 仅当核心含 ≥2 条线程（SMT）时才在 Tile 内展开线程明细：
@@ -73,6 +77,12 @@ public sealed class DashboardCoreVm : ObservableObject
     /// 角色是「怎么跑的」。二者共同构成"挂机"的可读性。
     /// </summary>
     public CoreRoleVm Role { get; } = new();
+
+    /// <summary>
+    /// 弹卡戳一戳小核灵（v1.28.0）。纯会话级趣味：不落盘、不进 EXP 口径，
+    /// 台词按当前状态即兴生成 —— 见 <see cref="CorePokeVm"/>。
+    /// </summary>
+    public CorePokeVm Poke { get; } = new();
 
     /// <summary>是否使用紧凑卡片布局（E-Core，或分段较多时整体收一档）。</summary>
     public bool IsCompact { get; }
@@ -123,6 +133,41 @@ public sealed class DashboardCoreVm : ObservableObject
         get => _freqText;
         private set => SetProperty(ref _freqText, value);
     }
+
+    /// <summary>
+    /// 历史最高有效频率（v1.29.0）。数据源是 EXP 账本 <c>CoreExpEntry.MaxGhz</c>（跨进程留档），
+    /// 由 <see cref="ViewModels.Dashboard.DashboardViewModel"/> 每轮刷新推送。
+    /// 从未观测到时保持 "峰值 -" —— 沿用全线「不拿 0 冒充缺失」的约定。
+    /// </summary>
+    public string PeakFreqText
+    {
+        get => _peakFreqText;
+        private set => SetProperty(ref _peakFreqText, value);
+    }
+
+    /// <summary>推送历史峰值频率（GHz）。非有限值（NaN/±Inf）一律按「没有证据」降级 "-"；
+    /// 值不变时 setter 去重，不发通知 —— 只有破纪录才变值，通知近乎为零。</summary>
+    public void ApplyPeakFreq(double maxGhz)
+        => PeakFreqText = double.IsFinite(maxGhz) ? $"峰值 {maxGhz:0.00} GHz" : "峰值 -";
+
+    private string _peakDurationText = "峰值累计 -";
+
+    /// <summary>峰值档累计持续时长文本（v1.30.0）。账本 <c>PeakSeconds</c> 留档；从未上过峰值档为 "-"。</summary>
+    public string PeakDurationText
+    {
+        get => _peakDurationText;
+        private set => SetProperty(ref _peakDurationText, value);
+    }
+
+    /// <summary>推送峰值档累计时长（秒）。NaN/非正数一律 "-"（没有证据不造数）；破纪录才变值。</summary>
+    public void ApplyPeakDuration(double seconds)
+        => PeakDurationText = !double.IsFinite(seconds) || seconds <= 0
+            ? "峰值累计 -"
+            : seconds < 60 ? $"峰值累计 {seconds:0} 秒"
+            : seconds < 3600 ? $"峰值累计 {seconds / 60.0:0.#} 分钟"
+            : $"峰值累计 {seconds / 3600.0:0.##} 小时";
+
+    private string _peakFreqText = "峰值 -";
 
     /// <summary>状态标签（摸鱼/空闲/工作/忙碌/高负载/爆肝）。</summary>
         public string StatusLabel

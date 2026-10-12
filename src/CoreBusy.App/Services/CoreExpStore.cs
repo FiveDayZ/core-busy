@@ -35,6 +35,7 @@ public sealed class CoreExpEntry
 
     /// <summary>历史最高有效频率（GHz）。读不到时为 <see cref="double.NaN"/>。</summary>
     public double MaxGhz { get; set; } = double.NaN;
+    public double PeakSeconds { get; set; } = double.NaN;
 
     /// <summary>历史峰值发生时刻（ISO 8601 本地时间）。从未出现时为 null。</summary>
     public string? PeakAt { get; set; }
@@ -251,6 +252,7 @@ public static class CoreExpStore
         /// <summary>null = 读不到（回读为 NaN）。</summary>
         [JsonPropertyName("maxGhz")]
         public string? MaxGhz { get; set; }
+        public string? PeakSeconds { get; set; }
 
         [JsonPropertyName("peakAt")]
         public string? PeakAt { get; set; }
@@ -264,6 +266,7 @@ public static class CoreExpStore
             FloorCoreMinutes = e.FloorCoreMinutes,
             PeakPercent = Fmt(e.PeakPercent),
             MaxGhz = Fmt(e.MaxGhz),
+            PeakSeconds = Fmt(e.PeakSeconds),
             PeakAt = e.PeakAt,
             TotalLevels = e.TotalLevels,
         };
@@ -274,6 +277,7 @@ public static class CoreExpStore
             FloorCoreMinutes = FloorCoreMinutes,
             PeakPercent = Parse(PeakPercent),
             MaxGhz = Parse(MaxGhz),
+            PeakSeconds = Parse(PeakSeconds),
             PeakAt = PeakAt,
             TotalLevels = TotalLevels,
         };

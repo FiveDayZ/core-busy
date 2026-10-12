@@ -1,6 +1,7 @@
 namespace CoreBusy.Windows.Topology;
 
 using System.Runtime.InteropServices;
+using CoreBusy.Core.Models;
 
 /// <summary>
 /// 基于 CPUID 指令的物理核心归并探针（独立于固件 ACPI / 内核拓扑表）。
@@ -9,16 +10,30 @@ using System.Runtime.InteropServices;
 /// 不经过 BIOS 的 ACPI 表，是 <c>GetLogicalProcessorInformationEx</c> 之外的独立真相来源。
 /// 用途：个别整机固件会误报物理核拓扑（实测 i3-N305 8 核 8 线程被报成 4 核 × 2 线程），
 /// 此时以 CPUID 归并结果为准做交叉校验。
+/// 混合架构（Intel 12 代起，P 核带 SMT、E 核单线程）每核线程数不均一：
+/// 统一移位会把相邻 E 核两两并成假核心（实测 U300 5 核 6 线程被读成 3 核 6 线程），
+/// 因此混合架构改走逐逻辑处理器识别核心类型（CPUID.1AH）再按类型归并的路径。
 /// </summary>
 internal static class CpuIdTopologyProbe
 {
     /// <summary>探测结果：<see cref="CoreIdByOsIndex"/> 按系统逻辑处理器编号给出核心 ID。</summary>
-    public sealed record ProbeResult(int ThreadsPerCore, int[] CoreIdByOsIndex)
+    /// <param name="CoreTypeByOsIndex">
+    /// 混合架构时按逻辑处理器给出核心类别（CPUID.1AH 核心类型）；非混合架构为 null。
+    /// </param>
+    public sealed record ProbeResult(
+        int ThreadsPerCore,
+        int[] CoreIdByOsIndex,
+        CoreClass[]? CoreTypeByOsIndex = null)
     {
         /// <summary>物理核心数（核心 ID 去重数）。</summary>
         public int CoreCount => CoreIdByOsIndex.Distinct().Count();
 
-        public string Detail => $"tpc={ThreadsPerCore} cores={CoreCount}";
+        /// <summary>探针是否逐逻辑处理器识别了核心类别（混合架构模式）。</summary>
+        public bool HasCoreTypes => CoreTypeByOsIndex is not null;
+
+        public string Detail => HasCoreTypes
+            ? $"hybrid cores={CoreCount}"
+            : $"tpc={ThreadsPerCore} cores={CoreCount}";
     }
 
     private const int VendorOther = 0;
@@ -79,7 +94,20 @@ internal static class CpuIdTopologyProbe
         try
         {
             var vendor = DetectVendor(cpuId);
-            var threadsPerCore = DetectThreadsPerCore(cpuId, vendor, logicalCount);
+            var maxLeaf = cpuId.Read(0, 0).Eax;
+
+            // Intel 混合架构判别：0x1F 各子叶的核心类型同时含 P(Core,0x40) 与 E(Atom,0x20)。
+            var hybrid = vendor == VendorIntel && maxLeaf >= 0x1F && IsIntelHybrid(cpuId);
+            if (hybrid && maxLeaf < 0x1A)
+            {
+                // 核心类型无法读取就无法正确归并（统一移位必然并错 E 核），保守放弃，维持 GLPI 结果。
+                reason = "hybrid cpu without cpuid leaf 0x1A (core type unavailable)";
+                return null;
+            }
+
+            // 混合架构：按核心类型分别取每核线程数；同构：统一每核线程数。
+            var tpcByType = hybrid ? DetectThreadsPerCoreByType(cpuId) : null;
+            var threadsPerCore = hybrid ? 0 : DetectThreadsPerCore(cpuId, vendor, logicalCount);
             var smtShift = threadsPerCore switch
             {
                 >= 8 => 3,
@@ -88,7 +116,8 @@ internal static class CpuIdTopologyProbe
                 _ => 0,
             };
 
-            var coreByOs = new int[logicalCount];
+            var apicByOs = new int[logicalCount];
+            var rawTypeByOs = hybrid ? new byte[logicalCount] : null;
             var seenApicIds = new HashSet<int>();
             for (var os = 0; os < logicalCount; os++)
             {
@@ -124,16 +153,135 @@ internal static class CpuIdTopologyProbe
                     return null; // 两个 OS 编号读到同一 APIC ID：亲和性未生效，探测作废。
                 }
 
-                coreByOs[os] = apicId >> smtShift;
+                apicByOs[os] = apicId;
+                if (hybrid)
+                {
+                    // CPUID.1AH.EAX[31:24] = 当前处理器的核心类型（0x40=Core/P，0x20=Atom/E）。
+                    rawTypeByOs![os] = (byte)((cpuId.Read(0x1A, 0).Eax >> 24) & 0xFF);
+                }
             }
 
-            reason = $"ok vendor={vendor} tpc={threadsPerCore} cores={coreByOs.Distinct().Count()}";
-            return new ProbeResult(threadsPerCore, coreByOs);
+            int[] coreByOs;
+            CoreClass[]? typeByOs;
+            if (hybrid)
+            {
+                (coreByOs, typeByOs) = GroupHybridByApic(apicByOs, rawTypeByOs!, tpcByType!);
+                reason = $"ok vendor={vendor} hybrid tpcByType={DescribeTpcByType(tpcByType!)} " +
+                         $"cores={coreByOs.Distinct().Count()}";
+            }
+            else
+            {
+                coreByOs = new int[logicalCount];
+                for (var os = 0; os < logicalCount; os++)
+                    coreByOs[os] = apicByOs[os] >> smtShift;
+
+                typeByOs = null;
+                reason = $"ok vendor={vendor} tpc={threadsPerCore} cores={coreByOs.Distinct().Count()}";
+            }
+
+            return new ProbeResult(threadsPerCore, coreByOs, typeByOs);
         }
         finally
         {
             SetThreadAffinityMask(GetCurrentThread(), original);
         }
+    }
+
+    /// <summary>
+    /// Intel 混合架构判别：扫描 CPUID.1F 各子叶的核心类型（EAX[31:24]），
+    /// 同时出现 Core(0x40) 与 Atom(0x20) 即为混合架构（P 核 + E 核并存）。
+    /// </summary>
+    private static bool IsIntelHybrid(CpuIdAccessor cpuId)
+    {
+        bool core = false, atom = false;
+        for (uint sub = 0; sub < 8 && !(core && atom); sub++)
+        {
+            var r = cpuId.Read(0x1F, (int)sub);
+            if (r.Eax == 0 && r.Ebx == 0 && r.Ecx == 0)
+                break; // 无效子叶（超出实际层级数）。
+
+            var type = (r.Eax >> 24) & 0xFF;
+            if (type == 0x40)
+                core = true;
+            else if (type == 0x20)
+                atom = true;
+        }
+
+        return core && atom;
+    }
+
+    /// <summary>
+    /// 混合架构下按核心类型取每核线程数：扫描 CPUID.1F 各子叶，
+    /// SMT 层级（ECX[7:0]==0）的 EBX 即该核心类型（ECX[15:8]）的每核线程数。
+    /// P 域典型为 2，E 域无 SMT 子叶时缺失（归并侧按 1 处理）。
+    /// </summary>
+    private static Dictionary<byte, int> DetectThreadsPerCoreByType(CpuIdAccessor cpuId)
+    {
+        var tpcByType = new Dictionary<byte, int>();
+        for (uint sub = 0; sub < 8; sub++)
+        {
+            var r = cpuId.Read(0x1F, (int)sub);
+            if (r.Eax == 0 && r.Ebx == 0 && r.Ecx == 0)
+                break; // 无效子叶（超出实际层级数）。
+
+            if ((r.Ecx & 0xFF) == 0 && r.Ebx > 0)
+                tpcByType.TryAdd((byte)((r.Ecx >> 8) & 0xFF), (int)r.Ebx);
+        }
+
+        return tpcByType;
+    }
+
+    private static string DescribeTpcByType(Dictionary<byte, int> tpcByType)
+        => tpcByType.Count == 0
+            ? "none"
+            : string.Join(",", tpcByType.Select(kv => $"0x{kv.Key:X}:{kv.Value}"));
+
+    /// <summary>
+    /// 混合架构核心归并（纯函数，供模拟验证）：按「核心类型 + 类型内移位后的 APIC ID」分组。
+    /// 每个类型的移位档位取自该类型自身的每核线程数——P 域 tpc=2 右移 1 位、
+    /// E 域 tpc=1 右移 0 位，各自独立归并；分组编号按 OS 序首次出现顺序分配
+    /// （Windows 上 P 核通常排在逻辑处理器序列前端）。
+    /// 绝不能用统一移位：U300 5C6T 按 P 域 tpc=2 统一移位时，4 颗 E 核的连续 APIC ID
+    /// 会被两两合并，得到 3 核的错误结论。
+    /// </summary>
+    /// <returns>按系统逻辑处理器编号给出的分组 ID 与核心类别。</returns>
+    internal static (int[] GroupIdByOsIndex, CoreClass[] TypeByOsIndex) GroupHybridByApic(
+        int[] apicIdByOsIndex,
+        byte[] rawCoreTypeByOsIndex,
+        Dictionary<byte, int> threadsPerCoreByType)
+    {
+        var count = apicIdByOsIndex.Length;
+        var groupByOs = new int[count];
+        var typeByOs = new CoreClass[count];
+        var groupIndexOf = new Dictionary<(byte Type, int CoreId), int>();
+
+        for (var os = 0; os < count; os++)
+        {
+            var typeByte = rawCoreTypeByOsIndex[os];
+            typeByOs[os] = typeByte switch
+            {
+                0x40 => CoreClass.Performance,
+                0x20 => CoreClass.Efficiency,
+                _ => CoreClass.Standard,
+            };
+
+            var tpc = threadsPerCoreByType.TryGetValue(typeByte, out var t) && t > 0 ? t : 1;
+            var smtShift = tpc switch
+            {
+                >= 8 => 3,
+                >= 4 => 2,
+                >= 2 => 1,
+                _ => 0,
+            };
+
+            var key = (typeByte, apicIdByOsIndex[os] >> smtShift);
+            if (!groupIndexOf.TryGetValue(key, out var group))
+                groupIndexOf[key] = group = groupIndexOf.Count;
+
+            groupByOs[os] = group;
+        }
+
+        return (groupByOs, typeByOs);
     }
 
     /// <summary>从 CPUID 叶 0 的厂商标识串判别厂商（EBX+EDX+ECX 拼出 "GenuineIntel" / "AuthenticAMD"）。</summary>

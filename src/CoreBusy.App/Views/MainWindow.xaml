@@ -253,6 +253,12 @@
                     <TextBlock Text="{Binding FreqText}" FontSize="10"
                                Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,4,0,0"
                                Typography.NumeralAlignment="Tabular" />
+                    <TextBlock Text="{Binding PeakFreqText}" FontSize="10"
+                                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,2,0,0"
+                                               Typography.NumeralAlignment="Tabular" />
+                    <TextBlock Text="{Binding PeakDurationText}" FontSize="10"
+                                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,2,0,0"
+                                               Typography.NumeralAlignment="Tabular" />
 
                     <!--  成长主体（v1.27.0）：大号等级 + 平滑生长的 EXP 动画条 + ETA 预估。
                           文字解释（口径声明/解锁清单）全部撤下：口径细节收进进度条 ToolTip，
@@ -287,6 +293,34 @@
 
                     <TextBlock Text="{Binding Level.NextUnlockText}" FontSize="9" Margin="0,5,0,0"
                                Foreground="{StaticResource CoreBusyTextWeakBrush}" />
+
+                    <!--  戳一戳（v1.28.0）：阶段小核灵 + 状态台词气泡。
+                          整行透明 Grid 吃点击（Background=Transparent 才能 hit-test），
+                          点击只播一次弹跳补间 + 换台词 —— 无常驻动画，不落盘。
+                          台词逻辑见 CorePokeQuips / CorePokeVm。  -->
+                    <Grid Margin="0,10,0,0" Background="Transparent" Cursor="Hand"
+                          MouseLeftButtonDown="OnPokeCreatureClick">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="PokeFace" Text="{Binding Poke.Face}" FontSize="30"
+                                   VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                            <TextBlock.RenderTransform>
+                                <ScaleTransform x:Name="PokeFaceScale" />
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
+                        <Border Grid.Column="1" Margin="8,0,0,0" Padding="8,6" CornerRadius="8"
+                                Background="{StaticResource CoreBusyTrackBrush}"
+                                VerticalAlignment="Center">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Poke.Quip}" FontSize="10.5" TextWrapping="Wrap"
+                                           Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
+                                <TextBlock Text="{Binding Poke.HintText}" FontSize="8.5" Margin="0,2,0,0"
+                                           Foreground="{StaticResource CoreBusyTextWeakBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                 </StackPanel>
             </Border>
         </Border>

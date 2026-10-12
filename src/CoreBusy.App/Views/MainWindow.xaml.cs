@@ -277,6 +277,9 @@ public partial class MainWindow : Window
 
             FocusCard.DataContext = core;
             FocusCard.PlacementTarget = (UIElement)sender;
+            // 戳一戳（v1.28.0）：每次弹卡换一句招呼（不计入戳击）——
+            // 含换核重开弹卡的路径（此时 Opened 事件不触发，必须在这里问候）。
+            core.Poke.Greet();
             FocusCard.IsOpen = true;
         }
     }
@@ -328,6 +331,34 @@ public partial class MainWindow : Window
     {
         if (e.PropertyName == nameof(CoreLevelVm.Progress) && FocusCard.IsOpen && _focusedCore is not null)
             AnimateExpFill(_focusedCore.Level.Progress);
+    }
+
+    /// <summary>
+    /// 戳一戳（v1.28.0）：点击小核灵 → 弹跳一下 + 换一句状态台词。
+    /// </summary>
+    /// <remarks>
+    /// 弹跳是 ScaleTransform 补间、只在点击瞬间播一次（140ms 自动回弹）；
+    /// 台词由 <see cref="CorePokeQuips"/> 按当前状态/占用/等级现挑。
+    /// 全部会话级：无持久化、无常驻动画，不给软渲染引擎添持续负载。
+    /// </remarks>
+    private void OnPokeCreatureClick(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (_focusedCore is null)
+            return;
+
+        var bounce = new System.Windows.Media.Animation.DoubleAnimation(1.28, TimeSpan.FromMilliseconds(140))
+        {
+            AutoReverse = true,
+            EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut },
+        };
+        PokeFaceScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, bounce);
+        PokeFaceScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, bounce);
+
+        var core = _focusedCore;
+        core.Poke.Poke(
+            core.StatusLabel, core.Usage, core.FreqText,
+            core.Level.Level, core.Level.IsMaxLevel, core.Level.Progress);
     }
 
     /// <summary>EXP 条宽度补间（ease-out 700ms）。EXP 每个采样周期都在涨，
