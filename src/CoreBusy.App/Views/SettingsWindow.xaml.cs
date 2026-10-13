@@ -23,6 +23,16 @@ public partial class SettingsWindow : Window
     private readonly ICpuOptimizationService? _optimization;
     private readonly IPowerPolicyService? _powerPolicy;
 
+    /// <summary>CPU 型号（注册建档用，主窗口传入；拿不到时空 = 注册行先不出 CPU，首条心跳补上）。</summary>
+    private readonly string? _cpuName;
+
+    /// <summary>
+    /// 注册成功回调（v1.35.1）：注册即生效的关键 —— 设置窗口只负责落盘，运行中实例的
+    /// 内存配置由此回调同步给 DashboardViewModel，免去「必须点确定/重启才开始上报」。
+    /// 参数 (url, token, alias)；在 UI 线程触发（注册按钮回调链路）。
+    /// </summary>
+    public Action<string, string, string>? TelemetryActivated;
+
     /// <summary>按硬件能力过滤后的亲和性模式（与下拉框下标一一对应）。</summary>
     private readonly IReadOnlyList<CoreAffinityMode> _affinityModes;
 
@@ -54,10 +64,11 @@ public partial class SettingsWindow : Window
     {
     }
 
-    public SettingsWindow(ICpuOptimizationService? optimization, IPowerPolicyService? powerPolicy)
+    public SettingsWindow(ICpuOptimizationService? optimization, IPowerPolicyService? powerPolicy, string? cpuName = null)
     {
         _optimization = optimization;
         _powerPolicy = powerPolicy;
+        _cpuName = cpuName;
 
         // 下拉选项必须在 InitializeComponent 之后才能塞给控件，但模式表本身要先算好。
         _affinityModes = optimization?.AvailableAffinityModes is { Count: > 0 } modes
@@ -388,6 +399,7 @@ public partial class SettingsWindow : Window
             {
                 DeviceId = Services.MachineFingerprint.Compute(),
                 Alias = string.IsNullOrEmpty(alias) ? null : alias,
+                CpuModel = string.IsNullOrEmpty(_cpuName) ? null : _cpuName,
             }).ConfigureAwait(true);
 
         TelemetryEnrollButton.IsEnabled = true;
@@ -400,16 +412,18 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // 成功：填入 Token、勾选启用并立即落盘（注册动作自持，不依赖用户点确定）。
+        // 成功：填入 Token、勾选启用并立即落盘（注册动作自持，不依赖用户点确定）；
+        // 再同步运行中实例的内存配置 —— 否则本进程要等「确定」/重启才开始上报（v1.35.1）。
         TelemetryTokenBox.Text = token;
         TelemetryCheck.IsChecked = true;
-        TelemetryEnrollStatus.Text = "注册成功，设备 Token 已填入并启用上报。";
+        TelemetryEnrollStatus.Text = "注册成功，30 秒内首报，之后每 10 分钟一次。";
         var settings = Services.SettingsStore.Load();
         settings.TelemetryEnabled = true;
         settings.TelemetryServerUrl = url;
         settings.TelemetryToken = token;
         settings.TelemetryAlias = alias;
         Services.SettingsStore.Save(settings);
+        TelemetryActivated?.Invoke(url, token, alias);
     }
 
 

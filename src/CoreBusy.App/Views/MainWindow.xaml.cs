@@ -142,10 +142,17 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
-        var dialog = new SettingsWindow(_viewModel.OptimizationService, _viewModel.PowerPolicyService)
+        var dialog = new SettingsWindow(
+            _viewModel.OptimizationService,
+            _viewModel.PowerPolicyService,
+            _viewModel.CpuName)
         {
             Owner = this,
         };
+        // 遥测注册即生效（v1.35.1）：注册成功时把新 Token/地址同步进运行中实例的内存配置，
+        // 不等用户点「确定」—— 否则注册后程序迟迟不上报，看板只剩注册时建档的空行。
+        dialog.TelemetryActivated = (url, token, alias) =>
+            _viewModel.ApplyTelemetryRuntime(url, token, alias);
         if (dialog.ShowDialog() == true)
         {
             var before = Services.SettingsStore.Load();

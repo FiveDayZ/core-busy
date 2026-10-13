@@ -884,6 +884,20 @@ public sealed class DashboardViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 遥测注册成功后的即时生效（v1.35.1）。注册是动作不是配置：设置窗口在注册成功时
+    /// 已把完整设置落盘，这里只同步内存态 —— 否则运行中的实例要等用户点「确定」或重启
+    /// 才开始上报，看板上会一直只有注册时建档的空行（实测踩坑：first_seen 停在注册时刻）。
+    /// 仅内存态、不落盘（磁盘由设置窗口负责）；UI 线程调用（注册按钮回调链路）。
+    /// </summary>
+    public void ApplyTelemetryRuntime(string url, string token, string alias)
+    {
+        _settings.TelemetryEnabled = true;
+        _settings.TelemetryServerUrl = url;
+        _settings.TelemetryToken = token;
+        _settings.TelemetryAlias = alias;
+    }
+
+    /// <summary>
     /// 应用设置窗口结果（采样周期 / 主题 / 核心分区 / 硬件传感器开关 / 游戏检测 / 核心优化）。
     /// 用户显式设置优先，会退出性能模式。
     /// 主题与核心分区需在窗口构建前生效（StaticResource 解析时机），此处只落盘，
