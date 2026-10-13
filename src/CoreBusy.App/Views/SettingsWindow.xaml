@@ -32,6 +32,18 @@
             <Setter Property="Foreground" Value="{StaticResource CoreBusyTextWeakBrush}" />
         </Style>
 
+        <!--  单行输入框（遥测上报 v1.34.0）：跟随主题刷子（DynamicResource），品牌换色时同步。  -->
+        <Style x:Key="OptionInput" TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource CoreBusyCardBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource CoreBusyTextPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource CoreBusyBorderWeakBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CaretBrush" Value="{DynamicResource CoreBusyTextPrimaryBrush}" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
         <!--  左侧分类导航项  -->
         <Style x:Key="NavItem" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{StaticResource CoreBusyTextSecondaryBrush}" />
@@ -462,6 +474,33 @@
                         </StackPanel>
                         <TextBlock x:Name="UpdateStatusText" Style="{StaticResource OptionHint}" Margin="25,8,0,0"
                                    TextWrapping="Wrap" />
+
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+
+                        <!--  遥测上报（v1.34.0）：默认关闭；开启后仅向自建后台上报统计量。  -->
+                        <TextBlock Text="遥测上报" Style="{StaticResource OptionLabel}" />
+                        <CheckBox x:Name="TelemetryCheck" Style="{StaticResource OptionCheck}" Margin="0,8,0,0"
+                                  Content="向自建遥测后台上报运行统计" />
+                        <TextBlock Text="上报内容：设备指纹（本机特征哈希）、CPU 配置、累计运行时长、累计功耗、上次/峰值功耗、逐核等级。"
+                                   Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
+                        <TextBlock Text="数据只发往下面填写的后台地址（hub/ 目录的 Docker 服务），不经过任何第三方服务器；关闭后立即停止上报。"
+                                   Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
+                        <TextBlock Text="服务器地址（如 http://192.168.1.10:8400/api/heartbeat）"
+                                   Style="{StaticResource OptionHint}" Margin="25,10,0,0" />
+                        <TextBox x:Name="TelemetryUrlBox" Style="{StaticResource OptionInput}" Margin="25,4,25,0" />
+                        <TextBlock Text="访问 Token（设备专属 Token 由注册自动填入，也可手动粘贴）" Style="{StaticResource OptionHint}" Margin="25,8,0,0" />
+                        <TextBox x:Name="TelemetryTokenBox" Style="{StaticResource OptionInput}" Margin="25,4,25,0" />
+                        <TextBlock Text="注册码（后台「注册码管理」生成，一次性、24 小时有效；填地址后点注册自动换取 Token）"
+                                   Style="{StaticResource OptionHint}" Margin="25,8,0,0" />
+                        <StackPanel Orientation="Horizontal" Margin="25,4,0,0">
+                            <TextBox x:Name="TelemetryInviteBox" Style="{StaticResource OptionInput}" Width="160"
+                                     HorizontalAlignment="Left" VerticalContentAlignment="Center" />
+                            <Button x:Name="TelemetryEnrollButton" Content="注册" Style="{StaticResource MiniButton}"
+                                    Margin="8,0,0,0" Click="OnTelemetryEnroll" />
+                        </StackPanel>
+                        <TextBlock x:Name="TelemetryEnrollStatus" Style="{StaticResource OptionHint}" Margin="25,4,0,0" />
+                        <TextBlock Text="设备别名（留空则上报 CPU 型号）" Style="{StaticResource OptionHint}" Margin="25,8,0,0" />
+                        <TextBox x:Name="TelemetryAliasBox" Style="{StaticResource OptionInput}" Margin="25,4,25,0" />
                     </StackPanel>
                 </ScrollViewer>
 

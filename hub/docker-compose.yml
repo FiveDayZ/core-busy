@@ -1,0 +1,14 @@
+services:
+  corebusy-hub:
+    build: .
+    container_name: corebusy-hub
+    ports:
+      - "8400:8400"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      # 可选：固定访问 Token（客户端与看板都填同一个）。不填则首次启动自动生成，
+      # 保存在 ./data/token.txt，浏览器看板与 core-busy 客户端设置里填它即可。
+      # - COREBUSY_HUB_TOKEN=change-me
+    restart: unless-stopped

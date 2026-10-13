@@ -66,6 +66,22 @@ public sealed class AppSettings
     /// </summary>
     public bool CheckUpdatesOnStartup { get; set; } = true;
 
+    // ── 遥测上报（v1.34.0）────────────────────────────────────────────
+    //    对外发数据必须显式开启，四个字段全部默认"关/空"：旧版 settings.json
+    //    缺这些字段时反序列化不触碰属性，得到关闭状态（向后兼容且安全）。
+
+    /// <summary>向自建遥测后台上报设备配置与累计统计。默认关闭。</summary>
+    public bool TelemetryEnabled { get; set; }
+
+    /// <summary>后台心跳地址（如 http://192.168.1.10:8400/api/heartbeat）。空 = 未配置。</summary>
+    public string TelemetryServerUrl { get; set; } = string.Empty;
+
+    /// <summary>后台访问 Token（随 X-Token 头发送）。</summary>
+    public string TelemetryToken { get; set; } = string.Empty;
+
+    /// <summary>设备别名；留空时上报 CPU 型号。</summary>
+    public string TelemetryAlias { get; set; } = string.Empty;
+
     // ── 整机功耗估算的逐部件可校准系数（v1.20.1）────────────────────────
     //    为什么从 v1.20.0 的「一个斜率 k + 一个底数 b」改成分项：那一版整机口径是
     //    「整机 ≈ k × CPU封装功耗 + b」，只有一个输入，于是"CPU 之外的一切"全被压进 k 与 b；

@@ -215,6 +215,25 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>累计运行时长的上次落盘时刻（节流用）。</summary>
     private DateTime _runtimeLastSave = DateTime.MinValue;
 
+    // ── 遥测（v1.34.0）────────────────────────────────────────────────
+    //    累计能耗/峰值/上次功耗的账本在构造期读回（运行时长不另立账本，读 _uptimeBase）。
+    private readonly TelemetryLedger _telemetry = new();
+
+    /// <summary>构造期缓存的 CPU 静态信息（心跳载荷的配置段来源）。</summary>
+    private CpuInfo _cpuInfo = new();
+
+    /// <summary>遥测账本的上次落盘时刻（墙钟秒，节流用；-1 = 首帧即落盘固化基量）。</summary>
+    private double _telemetryLastSavedSeconds = -1;
+
+    /// <summary>遥测心跳的上次发送时刻（UTC）；首次发送前额外等 30s 让快照攒出内容。</summary>
+    private DateTime _telemetryLastReportUtc = DateTime.MinValue;
+
+    /// <summary>上报在途标志（防重叠；上报是后台任务，帧循环只负责起头）。</summary>
+    private bool _telemetryReporting;
+
+    /// <summary>最近一次构建的心跳载荷（退出时 best-effort 补发用，逐核等级取自它）。</summary>
+    private TelemetryPayload? _lastTelemetryPayload;
+
     /// <summary>
     /// WHEA 硬件错误事件源（v1.17.0）。未接线时为 null，健康度的"稳定性"维度
     /// 就少了唯一直接指向硅退化的信号 —— 其余分量照常工作，不拖垮整个功能。
@@ -392,6 +411,10 @@ public sealed class DashboardViewModel : ObservableObject
         // 累计运行时长基量在构造期读回（v1.26.5），状态栏主显"累计"与悬浮提示用。
         (_uptimeBaseSeconds, _lastSessionSeconds) = RuntimeStatsStore.Load();
 
+        // 遥测账本（v1.34.0）在构造期读回：能耗/峰值/上次功耗的基量。
+        // 运行时长不在这里 —— RuntimeStatsStore 是该口径的唯一账本，遥测直接复用。
+        _telemetry.Load();
+
         // 健康度（v1.17.0）：基线从磁盘读回、由评分器就地更新、退出时落盘。
         _whea = wheaErrorSource;
         _healthBaselines = CoreHealthStore.Load();
@@ -401,6 +424,7 @@ public sealed class DashboardViewModel : ObservableObject
         var info = _monitor.GetCpuInfo();
         CpuName = info.Name;
         CpuSpecs = BuildSpecs(info);
+        _cpuInfo = info;
 
         // CPU 身份徽章：始终反映真实 CPU 厂商（与主题无关，规范 §48 视觉优先级）。
         CpuVendorBadge = info.Vendor.ToLowerInvariant() switch
@@ -725,6 +749,10 @@ public sealed class DashboardViewModel : ObservableObject
         RuntimeStatsStore.Save(
             _uptimeBaseSeconds + _uptime.Elapsed.TotalSeconds,
             _uptime.Elapsed.TotalSeconds);
+
+        // 遥测（v1.34.0）：退出前把累计量固化，并 best-effort 补发一次心跳（≤1.5s）。
+        _telemetry.Save();
+        TryReportTelemetryOnExit();
     }
 
     /// <summary>自启动以来的墙钟秒数（与 <see cref="_uptime"/> 同源）。</summary>
@@ -872,6 +900,10 @@ public sealed class DashboardViewModel : ObservableObject
         _settings.CoreLayout = settings.CoreLayout;
         _settings.CloseToTray = settings.CloseToTray;
         _settings.Optimization = settings.Optimization;
+        _settings.TelemetryEnabled = settings.TelemetryEnabled;
+        _settings.TelemetryServerUrl = settings.TelemetryServerUrl;
+        _settings.TelemetryToken = settings.TelemetryToken;
+        _settings.TelemetryAlias = settings.TelemetryAlias;
         SettingsStore.Save(_settings);
 
         // 优化总开关或游戏联动被关掉时，若正处在游戏会话中，立即撤销并复位边沿状态 ——
@@ -1228,6 +1260,157 @@ public sealed class DashboardViewModel : ObservableObject
         return dt;
     }
 
+    // ── 遥测（v1.34.0）────────────────────────────────────────────────
+    //    心跳只报"当前累计总量"（幂等快照）：断网丢包都无害，下一个 10 分钟周期
+    //    带更新的总量自然覆盖，无需补报队列。上报失败静默，绝不影响监控主流程。
+
+    /// <summary>遥测账本落盘节律（分钟），与 EXP 账本的 5 分钟节律对齐。</summary>
+    private const double TelemetrySaveIntervalMinutes = 5.0;
+
+    /// <summary>心跳间隔（秒）。设备在线判据与历史曲线粒度都由它决定。</summary>
+    private const double TelemetryReportIntervalSeconds = 600.0;
+
+    /// <summary>启动后先观测这么久才发第一次心跳，让健康度/等级攒出像样的快照。</summary>
+    private const double TelemetryFirstReportDelaySeconds = 30.0;
+
+    private System.DateTime? _telemetryFrameLastUtc;
+
+    /// <summary>
+    /// 遥测本帧墙钟差（秒），与 <see cref="NextPeakDt"/> 同一套纪律：
+    /// 首帧 0、休眠恢复钳 60s —— 睡眠时间既不记时长也不记能耗。
+    /// 独立时间戳而非复用 _peakFrameLastUtc：那一份在逐核循环里被每核推进一次，
+    /// 语义是"峰值档判定的帧间差"，与整机累计的帧间差不是同一个东西。
+    /// </summary>
+    private double NextTelemetryDt()
+    {
+        var nowUtc = System.DateTime.UtcNow;
+        double dt = _telemetryFrameLastUtc is { } last
+            ? System.Math.Min((nowUtc - last).TotalSeconds, 60.0)
+            : 0.0;
+        _telemetryFrameLastUtc = nowUtc;
+        return dt;
+    }
+
+    /// <summary>按节律把遥测账本落盘（首帧无条件执行一次，把读回的基量固化）。</summary>
+    private void MaybeSaveTelemetry(double elapsedSeconds)
+    {
+        var intervalDue = elapsedSeconds - _telemetryLastSavedSeconds >= TelemetrySaveIntervalMinutes * 60.0;
+        if (_telemetryLastSavedSeconds >= 0 && !intervalDue)
+            return;
+
+        _telemetry.Save();
+        _telemetryLastSavedSeconds = elapsedSeconds;
+    }
+
+    /// <summary>按节律发起心跳上报（后台任务，失败静默）。enabled/地址/Token 任一缺失即整段跳过。</summary>
+    private void MaybeReportTelemetry(IReadOnlyList<CpuCoreSnapshot> snapshots)
+    {
+        var enabled = _settings.TelemetryEnabled;
+        var url = _settings.TelemetryServerUrl.Trim();
+        var token = _settings.TelemetryToken.Trim();
+        if (!enabled || url.Length == 0 || token.Length == 0)
+            return;
+        if (!url.StartsWith("http://", System.StringComparison.OrdinalIgnoreCase)
+            && !url.StartsWith("https://", System.StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var nowUtc = System.DateTime.UtcNow;
+        if (_telemetryLastReportUtc == System.DateTime.MinValue)
+        {
+            if (elapsedSinceStart() < TelemetryFirstReportDelaySeconds)
+                return;
+        }
+        else if ((nowUtc - _telemetryLastReportUtc).TotalSeconds < TelemetryReportIntervalSeconds)
+        {
+            return;
+        }
+
+        _telemetryLastReportUtc = nowUtc;
+        var payload = BuildTelemetryPayload(snapshots);
+        _lastTelemetryPayload = payload;
+        if (_telemetryReporting)
+            return;
+
+        _telemetryReporting = true;
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                await TelemetryReporter.ReportAsync(payload, url, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _telemetryReporting = false;
+            }
+        });
+    }
+
+    /// <summary>由当前状态组装心跳载荷。非有限值一律转 null（JSON 不收 NaN，也不拿 0 冒充缺失）。</summary>
+    private TelemetryPayload BuildTelemetryPayload(IReadOnlyList<CpuCoreSnapshot> snapshots)
+    {
+        var grades = new List<TelemetryCoreGrade>(snapshots.Count);
+        foreach (var core in snapshots)
+        {
+            var level = _allCoresById.TryGetValue(core.Id, out var vm) ? vm.Level.Level : 0;
+            double? score = null;
+            if (_healthByCore.TryGetValue(core.Id, out var health) && double.IsFinite(health.Score))
+                score = System.Math.Round(health.Score, 1);
+
+            grades.Add(new TelemetryCoreGrade
+            {
+                Name = core.Id,
+                Type = core.IsPerformance ? "P" : core.Class == CoreClass.Efficiency ? "E" : "S",
+                Level = level,
+                Stage = UiTheme.StageIndexOf(level),
+                Score = score,
+            });
+        }
+
+        double? ToNullable(double value) => double.IsFinite(value) ? value : null;
+
+        return new TelemetryPayload
+        {
+            DeviceId = MachineFingerprint.Compute(),
+            Alias = _settings.TelemetryAlias.Length > 0 ? _settings.TelemetryAlias.Trim() : _cpuInfo.Name,
+            CpuModel = _cpuInfo.Name,
+            CoresPhysical = _cpuInfo.PhysicalCores,
+            CoresLogical = _cpuInfo.LogicalProcessors,
+            Hybrid = _cpuInfo.EfficiencyCoreCount > 0,
+            Os = Environment.OSVersion.VersionString,
+            AppVersion = UpdateService.CurrentVersionText,
+            RuntimeTotalSeconds = ToNullable(_uptimeBaseSeconds + _uptime.Elapsed.TotalSeconds),
+            EnergyTotalWh = ToNullable(_telemetry.CurrentEnergyTotalWh),
+            PowerLastW = ToNullable(_telemetry.CurrentLastW),
+            PowerPeakW = ToNullable(_telemetry.CurrentPeakW),
+            CoresGrade = grades,
+        };
+    }
+
+    /// <summary>
+    /// 退出时 best-effort 补发一次心跳（≤1.5s）。逐核等级取最近一次心跳的快照
+    /// （退出帧没有快照可遍历），累计总量则重新计算 —— 保证"退出时刻"的时长/能耗最新。
+    /// </summary>
+    private void TryReportTelemetryOnExit()
+    {
+        try
+        {
+            var url = _settings.TelemetryServerUrl.Trim();
+            var token = _settings.TelemetryToken.Trim();
+            if (!_settings.TelemetryEnabled || url.Length == 0 || token.Length == 0)
+                return;
+
+            var payload = BuildTelemetryPayload(Array.Empty<CpuCoreSnapshot>());
+            if (_lastTelemetryPayload?.CoresGrade is { Count: > 0 } grades)
+                payload.CoresGrade = grades;
+
+            TelemetryReporter.ReportAsync(payload, url, token).Wait(TimeSpan.FromSeconds(1.5));
+        }
+        catch (Exception)
+        {
+            // best-effort：退出路径上任何异常都不能拦住收尾。
+        }
+    }
+
     private void RefreshCoreLevels(IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
         foreach (var core in snapshots)
@@ -1385,6 +1568,12 @@ public sealed class DashboardViewModel : ObservableObject
         RefreshCoreLevels(snapshots);
         SaveExpIfNeeded(elapsed.TotalSeconds);
         RefreshCoreRoles(elapsed.TotalSeconds);
+
+        // 2c-bis. 遥测（v1.34.0）：逐帧累计能耗、按节律落盘与心跳上报。
+        //     放在等级刷新之后：coresGrade 里的 level 取的就是刚刷新完的 vm.Level.Level。
+        _telemetry.ObserveFrame(snapshot.PackagePowerW, NextTelemetryDt());
+        MaybeSaveTelemetry(elapsed.TotalSeconds);
+        MaybeReportTelemetry(snapshots);
 
         // 2d. 逐核角色（v1.22.0）。放在等级之后：两者都只读同一份账本，
         //     但角色判定要在账本并入之后再做，才能拿到「历史 + 本次」的合并量。

@@ -94,6 +94,16 @@ public partial class SettingsWindow : Window
         // 软件更新（v1.31.0）：自动检查开关 + 当前版本回显。
         CheckUpdatesCheck.IsChecked = settings.CheckUpdatesOnStartup;
         UpdateStatusText.Text = $"当前版本 {Services.UpdateService.CurrentVersionText}。";
+
+        // 遥测上报（v1.34.0）：默认关闭；回显服务器地址 / Token / 别名。
+        TelemetryCheck.IsChecked = settings.TelemetryEnabled;
+        TelemetryUrlBox.Text = settings.TelemetryServerUrl;
+        TelemetryTokenBox.Text = settings.TelemetryToken;
+        TelemetryAliasBox.Text = settings.TelemetryAlias;
+        TelemetryInviteBox.Clear();
+        TelemetryEnrollStatus.Text = string.IsNullOrWhiteSpace(settings.TelemetryToken)
+            ? "尚未注册：填服务器地址与注册码后点「注册」。"
+            : "已注册（设备 Token 就绪）。";
     }
 
     /// <summary>填充「性能优化」页：能力状态、电源预设、规则列表、游戏模式。</summary>
@@ -327,6 +337,10 @@ public partial class SettingsWindow : Window
             GameDetectionEnabled = GameCheck.IsChecked == true,
             CloseToTray = CloseToTrayCheck.IsChecked == true,
             CheckUpdatesOnStartup = CheckUpdatesCheck.IsChecked == true,
+            TelemetryEnabled = TelemetryCheck.IsChecked == true,
+            TelemetryServerUrl = TelemetryUrlBox.Text.Trim(),
+            TelemetryToken = TelemetryTokenBox.Text.Trim(),
+            TelemetryAlias = TelemetryAliasBox.Text.Trim(),
             Optimization = optimization,
         };
 
@@ -337,6 +351,67 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCancel(object sender, RoutedEventArgs e) => DialogResult = false;
+
+    // ── 遥测注册（v1.35.0）────────────────────────────────────────────
+    // 注册是动作不是配置：点了立即向 hub 兑换设备 Token 并持久化，不等「确定」。
+    // 与软件更新检查同一模式 —— 注册码一次性，失败重填重试即可，无中间状态。
+
+    private async void OnTelemetryEnroll(object sender, RoutedEventArgs e)
+    {
+        var url = TelemetryUrlBox.Text.Trim();
+        var invite = TelemetryInviteBox.Text.Trim().ToUpperInvariant();
+        var alias = TelemetryAliasBox.Text.Trim();
+
+        if (url.Length == 0 || invite.Length == 0)
+        {
+            TelemetryEnrollStatus.Text = "请先填服务器地址与注册码。";
+            return;
+        }
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            TelemetryEnrollStatus.Text = "服务器地址需以 http:// 或 https:// 开头。";
+            return;
+        }
+
+        // 心跳地址（…/api/heartbeat）派生注册端点；也接受直接填根地址。
+        var root = url.EndsWith("/api/heartbeat", StringComparison.OrdinalIgnoreCase)
+            ? url[..^"/api/heartbeat".Length]
+            : url.TrimEnd('/');
+
+        TelemetryEnrollButton.IsEnabled = false;
+        TelemetryEnrollStatus.Text = "注册中…";
+        var token = await Services.TelemetryReporter.EnrollAsync(
+            root + "/api/enroll",
+            invite,
+            new Services.TelemetryEnrollPayload
+            {
+                DeviceId = Services.MachineFingerprint.Compute(),
+                Alias = string.IsNullOrEmpty(alias) ? null : alias,
+            }).ConfigureAwait(true);
+
+        TelemetryEnrollButton.IsEnabled = true;
+        if (token is null)
+        {
+            var reason = Services.TelemetryReporter.LastError;
+            TelemetryEnrollStatus.Text = reason is "HTTP 410" ? "注册码已使用或已过期，请取新码。"
+                : reason is "HTTP 401" ? "注册码无效。"
+                : $"注册失败：{reason}";
+            return;
+        }
+
+        // 成功：填入 Token、勾选启用并立即落盘（注册动作自持，不依赖用户点确定）。
+        TelemetryTokenBox.Text = token;
+        TelemetryCheck.IsChecked = true;
+        TelemetryEnrollStatus.Text = "注册成功，设备 Token 已填入并启用上报。";
+        var settings = Services.SettingsStore.Load();
+        settings.TelemetryEnabled = true;
+        settings.TelemetryServerUrl = url;
+        settings.TelemetryToken = token;
+        settings.TelemetryAlias = alias;
+        Services.SettingsStore.Save(settings);
+    }
+
 
     // ── 软件更新（v1.31.0）────────────────────────────────────────────
     // 检查是动作不是配置：点了立即执行并回显，不等到「确定」。发现新版本时
