@@ -1,91 +1,243 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="W1tqx12RYFZgJCboIGT0zb">
-<head data-page-node-id="9J4ggEqtqFkAFGnMeZPGF5">
-<meta charset="utf-8" data-page-node-id="shcjyBLG0kZxmZQavgpRou">
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="kaC7CJAJs0yngYQYK2oGWn">
-<title>CORE-BUSY 遥测后台</title>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CORE-BUSY · 遥测后台</title>
 <style>
-  /* 与软件主界面同源色板（src/CoreBusy.App/Themes/Colors.xaml，Fluent 2 深色令牌） */
+  /* 与软件主界面同源色板（src/CoreBusy.App/Themes/Colors.xaml，Fluent 2 深色令牌）+ 科技感氛围层 */
   :root {
-    --bg:#1A1A1A; --panel:#232323; --card:#2B2B2B; --hover:#333333;
-    --bd:#3D3D3D; --bd2:#2E2E2E;
-    --tx:#F2F2F2; --tx2:#A6A6A6; --tx3:#737373;
-    --ac:#4CA0E0; --blue:#6FA8DC; --ok:#4EC48F; --warn:#E8C044; --org:#E8934A; --dg:#E5484D;
+    --bg:#1A1A1A; --panel:#1F1F1F; --card:#262626; --hover:#2E2E2E;
+    --bd:#3D3D3D; --bd2:#2A2A2A;
+    --tx:#F2F2F2; --tx2:#A6A6A6; --tx3:#6E6E6E;
+    --ac:#4CA0E0; --ac2:#7CC0FF; --ok:#4EC48F; --warn:#E8C044; --org:#E8934A; --dg:#E5484D;
   }
   * { box-sizing:border-box; }
-  body { margin:0; font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif; color:var(--tx); background:var(--bg); }
-  header { display:flex; align-items:center; gap:12px; padding:14px 24px; background:var(--panel); border-bottom:1px solid var(--bd); }
-  header h1 { font-size:16px; font-weight:500; margin:0; }
+  html, body { height:100%; }
+  body {
+    margin:0; font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif; color:var(--tx); background:var(--bg);
+    background-image:
+      radial-gradient(1100px 520px at 85% -10%, rgba(76,160,224,.09), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(78,196,143,.06), transparent 60%);
+    background-attachment:fixed;
+  }
+  /* 网格氛围层 */
+  .bgfx {
+    position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      linear-gradient(rgba(76,160,224,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(76,160,224,.035) 1px, transparent 1px);
+    background-size:44px 44px;
+    -webkit-mask-image:radial-gradient(ellipse 90% 70% at 50% 0%, #000 0%, transparent 75%);
+    mask-image:radial-gradient(ellipse 90% 70% at 50% 0%, #000 0%, transparent 75%);
+  }
+  /* ------- 顶栏 ------- */
+  header {
+    position:sticky; top:0; z-index:20; display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px;
+    padding:12px 26px; background:rgba(26,26,26,.82); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--bd2); box-shadow:0 4px 24px rgba(0,0,0,.35);
+  }
+  .brand { display:flex; align-items:center; gap:11px; user-select:none; }
+  .logo { width:38px; height:38px; filter:drop-shadow(0 0 8px rgba(76,160,224,.45)); }
+  .brand-name {
+    font-size:17px; font-weight:600; letter-spacing:2px; line-height:1.2;
+    background:linear-gradient(90deg, #BFE0FF, var(--ac2) 45%, var(--ok));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .brand-sub { font-size:10px; letter-spacing:4px; color:var(--tx3); text-transform:uppercase; }
+  nav { display:flex; gap:4px; margin-left:14px; }
+  .tab { padding:6px 16px; border-radius:9px; color:var(--tx2); cursor:pointer; font-size:13px; transition:all .15s; border:1px solid transparent; }
+  .tab:hover { color:var(--tx); background:var(--hover); }
+  .tab.active { color:var(--ac2); background:rgba(76,160,224,.13); border-color:rgba(76,160,224,.35); }
   header .sp { flex:1; }
-  header input { width:230px; padding:5px 9px; border:1px solid var(--bd); border-radius:8px; font:inherit; background:var(--card); color:var(--tx); }
+  .conn { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--tx3); }
+  .conn i { width:8px; height:8px; border-radius:50%; background:var(--tx3); }
+  .conn.on { color:var(--ok); } .conn.on i { background:var(--ok); box-shadow:0 0 8px rgba(78,196,143,.8); }
+  .conn.off { color:var(--dg); } .conn.off i { background:var(--dg); box-shadow:0 0 8px rgba(229,72,77,.8); }
+  header input { width:210px; padding:6px 11px; border:1px solid var(--bd); border-radius:9px; font:inherit; background:var(--card); color:var(--tx); transition:border-color .15s; }
+  header input:focus { outline:none; border-color:var(--ac); }
   header input::placeholder { color:var(--tx3); }
-  header button { padding:5px 14px; border:1px solid var(--bd); border-radius:8px; background:var(--card); color:var(--tx); cursor:pointer; font:inherit; }
-  header button:hover { border-color:var(--ac); color:var(--ac); background:var(--hover); }
-  main { padding:18px 24px; max-width:1280px; margin:0 auto; }
-  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--bd2); border-radius:12px; overflow:hidden; }
-  th,td { padding:9px 12px; text-align:left; border-bottom:1px solid var(--bd2); white-space:nowrap; }
-  th { font-weight:500; color:var(--tx2); background:var(--bg); font-size:13px; }
-  tbody tr { cursor:pointer; }
-  tbody tr:hover { background:var(--hover); }
+  .btn { padding:6px 16px; border:1px solid var(--bd); border-radius:9px; background:var(--card); color:var(--tx); cursor:pointer; font:inherit; transition:all .15s; }
+  .btn:hover { border-color:var(--ac); color:var(--ac2); background:var(--hover); }
+  .btn.primary { background:linear-gradient(135deg, #3B87C4, var(--ac)); border-color:transparent; color:#fff; font-weight:500; box-shadow:0 2px 12px rgba(76,160,224,.3); }
+  .btn.primary:hover { filter:brightness(1.12); color:#fff; }
+  /* ------- 主体 ------- */
+  main { position:relative; z-index:1; padding:22px 26px 48px; max-width:1360px; margin:0 auto; }
+  #err { display:none; margin-bottom:14px; padding:10px 16px; border:1px solid rgba(229,72,77,.4); border-radius:10px; color:#F08A8D; background:rgba(229,72,77,.08); }
+  .view[hidden] { display:none; }
+  /* 概览统计卡 */
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; margin-bottom:18px; }
+  .stat { position:relative; overflow:hidden; background:linear-gradient(180deg, rgba(76,160,224,.06), transparent 55%), var(--panel); border:1px solid var(--bd2); border-radius:14px; padding:14px 18px 12px; box-shadow:0 6px 24px rgba(0,0,0,.28); }
+  .stat::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:linear-gradient(180deg, var(--ac), transparent); }
+  .stat .k { font-size:12px; color:var(--tx2); letter-spacing:1.5px; }
+  .stat .v { font-size:23px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:3px; letter-spacing:.5px; }
+  .stat .v.ok { color:var(--ok); }
+  .stat .v small { font-size:12px; font-weight:400; color:var(--tx2); margin-left:4px; }
+  /* 表格 */
+  .tbl-wrap {
+    background:linear-gradient(180deg, rgba(76,160,224,.04), transparent 45%), var(--panel);
+    border:1px solid var(--bd2); border-radius:14px; overflow:auto; box-shadow:0 8px 30px rgba(0,0,0,.32);
+  }
+  table { width:100%; border-collapse:collapse; }
+  th,td { padding:11px 14px; text-align:left; border-bottom:1px solid var(--bd2); white-space:nowrap; }
+  th { font-weight:500; color:var(--tx2); background:rgba(0,0,0,.22); font-size:12px; letter-spacing:1px; text-transform:uppercase; position:sticky; top:0; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:var(--tx); }
+  th .arr { margin-left:4px; font-size:10px; color:var(--ac2); }
+  tbody tr { cursor:pointer; transition:background .12s; }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:hover { background:linear-gradient(90deg, rgba(76,160,224,.10), rgba(76,160,224,.02)); }
   td.num { text-align:right; font-variant-numeric:tabular-nums; }
   .dim { color:var(--tx2); }
-  /* 逐核等级徽章：语义色取自软件 Brushes.xaml 半透明变体（26/33 alpha） */
-  .badge { display:inline-block; padding:0 7px; margin:1px 2px; border:1px solid var(--bd); border-radius:9px; font-size:12px; background:var(--card); color:var(--tx2); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:7px; vertical-align:1px; }
+  .dot.on { background:var(--ok); box-shadow:0 0 6px rgba(78,196,143,.9); }
+  .dot.off { background:var(--tx3); }
+  /* 逐核等级徽章：语义色取自软件 Brushes.xaml 半透明变体 */
+  .badge { display:inline-block; padding:0 8px; margin:1px 2px; border:1px solid var(--bd); border-radius:9px; font-size:12px; background:var(--card); color:var(--tx2); }
   .b0 { border-color:var(--bd); }
   .b1 { background:#264EC48F; border-color:#4EC48F; color:#7BDCB2; }
   .b2 { background:#266FA8DC; border-color:#6FA8DC; color:#9DC4EC; }
   .b3 { background:#26E8934A; border-color:#E8934A; color:#F0B684; }
   .b4 { background:#33E8C044; border-color:#E8C044; color:#F0D484; }
-  #admin { margin-bottom:16px; background:var(--panel); border:1px solid var(--bd2); border-radius:12px; padding:14px 20px; }
-  #admin h2 { font-size:14px; font-weight:500; margin:0 0 8px; display:flex; align-items:center; gap:12px; }
-  #admin button { padding:4px 12px; border:1px solid var(--bd); border-radius:8px; background:var(--card); color:var(--tx); cursor:pointer; font:inherit; font-size:13px; }
-  #admin button:hover { border-color:var(--ac); color:var(--ac); }
-  #admin .invite { display:inline-block; margin:2px 6px 2px 0; padding:2px 10px; border:1px solid var(--bd); border-radius:8px; font-size:13px; font-family:Consolas,monospace; }
-  #admin .invite .st { margin-left:8px; font-size:12px; }
-  #admin .invite.active { border-color:var(--ac); color:var(--ac); }
-  #admin .invite.used { color:var(--tx3); }
-  #admin .invite.expired { border-color:var(--dg); color:var(--dg); }
-  #admin .invite .x { margin-left:6px; cursor:pointer; }
-  #admin .hint { font-size:12px; color:var(--tx3); margin-top:6px; }
-  #detail { display:none; margin-top:16px; background:var(--panel); border:1px solid var(--bd2); border-radius:12px; padding:16px 20px; }
-  #detail h2 { font-size:14px; font-weight:500; margin:0 0 8px; }
-  #detail .close { float:right; cursor:pointer; color:var(--tx2); border:none; background:none; font-size:14px; }
-  #detail .close:hover { color:var(--dg); }
-  .kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 18px; margin:10px 0; }
-  .kv div { font-size:13px; } .kv b { font-weight:500; color:var(--tx2); margin-right:6px; }
-  #err { color:var(--dg); padding:8px 0; }
-  svg.chart { width:100%; height:120px; border:1px solid var(--bd2); border-radius:8px; background:var(--card); }
-  .legend { font-size:12px; color:var(--tx2); margin:4px 0 12px; }
-  .sw { display:inline-block; width:10px; height:3px; vertical-align:middle; margin:0 4px 2px 12px; }
-  #detail .act { margin-right:8px; padding:3px 12px; border:1px solid var(--bd); border-radius:8px; background:var(--card); color:var(--tx); cursor:pointer; font:inherit; font-size:12px; }
-  #detail .act:hover { border-color:var(--ac); color:var(--ac); }
+  /* 逐核等级：表格内紧凑摘要（点击弹窗看完整） */
+  .gsum { display:inline-flex; align-items:center; gap:7px; padding:3px 11px; border-radius:9px; font-size:12px; cursor:pointer; border:1px solid var(--bd); background:var(--card); color:var(--tx2); transition:all .15s; }
+  .gsum .arr { opacity:.55; font-size:10px; }
+  .gsum:hover { filter:brightness(1.2); box-shadow:0 0 10px rgba(76,160,224,.25); }
+  .gs0 { border-color:var(--bd); color:var(--tx2); }
+  .gs1 { border-color:#4EC48F; color:#7BDCB2; background:rgba(78,196,143,.08); }
+  .gs2 { border-color:#6FA8DC; color:#9DC4EC; background:rgba(111,168,220,.08); }
+  .gs3 { border-color:#E8934A; color:#F0B684; background:rgba(232,147,74,.08); }
+  .gs4 { border-color:#E8C044; color:#F0D484; background:rgba(232,192,68,.08); }
+  /* 逐核等级弹窗 */
+  #goverlay { display:none; position:fixed; inset:0; z-index:60; background:rgba(10,10,10,.55); backdrop-filter:blur(5px); -webkit-backdrop-filter:blur(5px); overflow:auto; padding:60px 18px; }
+  .gpanel { width:min(640px,100%); margin:0 auto; position:relative; background:linear-gradient(180deg, rgba(76,160,224,.06), transparent 60px), var(--panel); border:1px solid var(--bd); border-radius:16px; padding:20px 24px 24px; box-shadow:0 24px 70px rgba(0,0,0,.55); }
+  .gpanel::before { content:""; position:absolute; top:-1px; left:24px; right:24px; height:2px; border-radius:2px; background:linear-gradient(90deg, var(--ac), var(--ok)); }
+  .gpanel h2 { font-size:15px; font-weight:600; margin:0 0 4px; }
+  .gpanel .x { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--tx2); border:1px solid var(--bd); background:var(--card); border-radius:8px; font-size:12px; padding:3px 10px; }
+  .gpanel .x:hover { color:var(--dg); border-color:var(--dg); }
+  #gbody { display:flex; flex-wrap:wrap; align-content:flex-start; gap:2px; margin-top:12px; min-height:30px; }
+  /* ------- 面板（注册码独立入口）------- */
+  .panel { background:linear-gradient(180deg, rgba(76,160,224,.05), transparent 50%), var(--panel); border:1px solid var(--bd2); border-radius:14px; padding:18px 22px; box-shadow:0 8px 30px rgba(0,0,0,.32); max-width:860px; }
+  .panel-h { display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+  .panel-h h2 { font-size:15px; font-weight:600; margin:0; letter-spacing:.5px; display:flex; align-items:center; gap:8px; }
+  .panel-h h2::before { content:""; width:4px; height:16px; border-radius:2px; background:linear-gradient(180deg, var(--ac), var(--ok)); }
+  #invites { display:flex; flex-wrap:wrap; gap:8px; min-height:30px; }
+  .invite { display:inline-flex; align-items:center; padding:4px 12px; border:1px solid var(--bd); border-radius:9px; font-size:13px; font-family:Consolas,monospace; background:var(--card); letter-spacing:1px; }
+  .invite .st { margin-left:9px; font-size:12px; font-family:"Segoe UI","Microsoft YaHei",sans-serif; }
+  .invite.active { border-color:var(--ac); color:var(--ac2); background:rgba(76,160,224,.10); box-shadow:0 0 10px rgba(76,160,224,.18); }
+  .invite.used { color:var(--tx3); }
+  .invite.expired { border-color:var(--dg); color:var(--dg); }
+  .invite .x { margin-left:8px; cursor:pointer; opacity:.6; }
+  .invite .x:hover { opacity:1; color:var(--dg); }
+  .hint { font-size:12px; color:var(--tx3); margin-top:12px; line-height:1.7; }
+  /* ------- 设备详情（模态）------- */
+  #overlay { display:none; position:fixed; inset:0; z-index:50; background:rgba(10,10,10,.6); backdrop-filter:blur(5px); -webkit-backdrop-filter:blur(5px); overflow:auto; padding:52px 18px; }
+  #detail { width:min(880px,100%); margin:0 auto; position:relative; background:linear-gradient(180deg, rgba(76,160,224,.06), transparent 60px), var(--panel); border:1px solid var(--bd); border-radius:16px; padding:22px 26px 26px; box-shadow:0 24px 70px rgba(0,0,0,.55); }
+  #detail::before { content:""; position:absolute; top:-1px; left:24px; right:24px; height:2px; border-radius:2px; background:linear-gradient(90deg, var(--ac), var(--ok)); }
+  #detail h2 { font-size:16px; font-weight:600; margin:0 0 12px; }
+  #detail h2 .dim { font-weight:400; font-size:13px; }
+  #detail h3 { font-size:14px; font-weight:500; margin:18px 0 8px; color:var(--tx2); }
+  #detail .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--tx2); border:1px solid var(--bd); background:var(--card); border-radius:8px; font-size:12px; padding:3px 10px; }
+  #detail .close:hover { color:var(--dg); border-color:var(--dg); }
+  .kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:8px 20px; margin:12px 0; }
+  .kv div { font-size:13px; padding:6px 10px; background:rgba(255,255,255,.025); border:1px solid var(--bd2); border-radius:9px; }
+  .kv b { font-weight:500; color:var(--tx2); margin-right:8px; font-size:12px; }
+  #detail .act { margin-right:8px; margin-top:6px; }
   #detail .act.danger:hover { border-color:var(--dg); color:var(--dg); }
+  svg.chart { width:100%; height:130px; border:1px solid var(--bd2); border-radius:10px; background:rgba(0,0,0,.22); }
+  .legend { font-size:12px; color:var(--tx2); margin:6px 0 4px; }
+  .sw { display:inline-block; width:12px; height:3px; border-radius:2px; vertical-align:middle; margin:0 5px 2px 14px; }
+  footer { position:relative; z-index:1; text-align:center; color:var(--tx3); font-size:11px; letter-spacing:2px; padding:0 0 26px; }
 </style>
 </head>
-<body data-page-node-id="MKhBbnhncDRAiNxvMFeXui">
-<header data-page-node-id="jFF1CxTujCK9peExiLkUuZ">
-  <h1 data-page-node-id="UvrsCjs07yeexiwtflUfWJ">CORE-BUSY 遥测后台</h1>
-  <span class="sp" data-page-node-id="Nf2Ekkwj0LyCv6tCwKjfcj"></span>
-  <input id="token" type="password" placeholder="访问 Token" data-page-node-id="OwGkeEZaVlCyn5JfwAwVuc">
-  <button onclick="saveTokenAndLoad()" data-page-node-id="Fr9QEvBogEYGpI6qSdTV0G">连接</button>
+<body>
+<div class="bgfx"></div>
+
+<header>
+  <div class="brand" title="CORE-BUSY Telemetry Hub">
+    <svg class="logo" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="lg" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#4CA0E0"/><stop offset="1" stop-color="#4EC48F"/>
+        </linearGradient>
+      </defs>
+      <g stroke="#4CA0E0" stroke-width="2" stroke-linecap="round" opacity=".75">
+        <line x1="14" y1="3" x2="14" y2="8"/><line x1="22" y1="3" x2="22" y2="8"/><line x1="30" y1="3" x2="30" y2="8"/>
+        <line x1="14" y1="36" x2="14" y2="41"/><line x1="22" y1="36" x2="22" y2="41"/><line x1="30" y1="36" x2="30" y2="41"/>
+        <line x1="3" y1="14" x2="8" y2="14"/><line x1="3" y1="22" x2="8" y2="22"/><line x1="3" y1="30" x2="8" y2="30"/>
+        <line x1="36" y1="14" x2="41" y2="14"/><line x1="36" y1="22" x2="41" y2="22"/><line x1="36" y1="30" x2="41" y2="30"/>
+      </g>
+      <rect x="10.5" y="10.5" width="23" height="23" rx="5.5" stroke="url(#lg)" stroke-width="2"/>
+      <rect x="17.5" y="17.5" width="9" height="9" rx="2.5" fill="url(#lg)"/>
+    </svg>
+    <div>
+      <div class="brand-name">CORE-BUSY</div>
+      <div class="brand-sub">Telemetry Hub</div>
+    </div>
+  </div>
+  <nav>
+    <a class="tab active" data-view="v-devices" onclick="switchView('v-devices')">设备总览</a>
+    <a class="tab" id="tab-admin" data-view="v-admin" style="display:none" onclick="switchView('v-admin')">注册码管理</a>
+  </nav>
+  <span class="sp"></span>
+  <span class="conn" id="conn"><i></i><span>未连接</span></span>
+  <input id="token" type="password" placeholder="访问 Token">
+  <button class="btn primary" onclick="saveTokenAndLoad()">连接</button>
 </header>
-<main data-page-node-id="Sp7TrDCvT1djyMfsqRP2cG">
-  <div id="err" data-page-node-id="cAQDQLq7Avtg3N5NXtQMnX"></div>
-  <section id="admin" style="display:none" data-page-node-id="ifPaIqzvUlBusPQYfWTCWo">
-    <h2 data-page-node-id="q5p8GMPIDNukBINYS8Ow0j">注册码管理 <button onclick="createInvite()" data-page-node-id="jjfqJJM9vOM4PaLuL1kCOt">生成注册码</button></h2>
-    <div id="invites" data-page-node-id="ycBMOWonbUBCCEoqYAOlrs"><span class="dim" data-page-node-id="FNBBwLOusFbSkJaDnzvHMY">-</span></div>
-    <div class="hint" data-page-node-id="uypSk8oFD3WkyL3VFERVkq">注册码一次性使用，24 小时过期。在设备端「设置 → 遥测上报」输入注册码一键注册，自动换取设备专属 Token；设备 Token 可在设备详情里换发或吊销。</div>
+
+<main>
+  <div id="err"></div>
+
+  <!-- 视图一：设备总览 -->
+  <section id="v-devices" class="view">
+    <div class="stats">
+      <div class="stat"><div class="k">接入设备</div><div class="v" id="st-dev">-</div></div>
+      <div class="stat"><div class="k">在线设备</div><div class="v ok" id="st-on">-</div></div>
+      <div class="stat"><div class="k">全网累计运行</div><div class="v" id="st-rt">-</div></div>
+      <div class="stat"><div class="k">全网累计功耗</div><div class="v" id="st-en">-</div></div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>设备</th><th>CPU</th><th>系统 / 版本</th><th>最近在线</th>
+          <th class="num sortable" id="th-rt" onclick="setSort('runtime_total')">累计运行</th><th class="num sortable" id="th-en" onclick="setSort('energy_total')">累计功耗</th>
+          <th class="num sortable" id="th-pl" onclick="setSort('power_last')">上次功耗</th><th class="num sortable" id="th-pk" onclick="setSort('power_peak')">峰值功耗</th><th>逐核等级</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="9" class="dim">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </section>
-  <table data-page-node-id="ASS0Pb9DntcBuxtoXC29co">
-    <thead data-page-node-id="G7DmswS4BqiChohWKChJVr"><tr data-page-node-id="iTT75tjkL0v0Bd6bwFwMxa">
-      <th data-page-node-id="ho2NKdpdbjvey5YBLdcPbs">设备</th><th data-page-node-id="LJW1Fl0yCukHDjKCWY3MCN">CPU</th><th data-page-node-id="FC2Aw14j7zhNQRzJsxc5M3">系统 / 版本</th><th data-page-node-id="bdsDub5sxxiuwwroIcLkA9">最近在线</th>
-      <th class="num" data-page-node-id="JRA09MpAsg6BartfsprKkO">累计运行</th><th class="num" data-page-node-id="BoS3k0nPE9YBJfpp9MNpYe">累计功耗</th>
-      <th class="num" data-page-node-id="G8sIdREL5ueC3Da92kI0uf">上次功耗</th><th class="num" data-page-node-id="4i1jeUIjXcqEPFU4s6Lfdv">峰值功耗</th><th data-page-node-id="ZW8OYZ2XAclZS1rO2VFIAr">逐核等级</th>
-    </tr></thead>
-    <tbody id="rows" data-page-node-id="HPtQNBMYRVGjCUSEIznzXg"><tr data-page-node-id="bXPv31D64Sh3gDPRmbHGxE"><td colspan="9" class="dim" data-page-node-id="sZf2ggdSet2nCEEFyLGuIf">加载中…</td></tr></tbody>
-  </table>
-  <div id="detail" data-page-node-id="Vy9iiYGdn9FJDjMc5Kp59A"></div>
+
+  <!-- 视图二：注册码管理（独立入口，仅管理员 Token 可见） -->
+  <section id="v-admin" class="view" hidden>
+    <div class="panel">
+      <div class="panel-h">
+        <h2>注册码管理</h2>
+        <button class="btn primary" onclick="createInvite()">＋ 生成注册码</button>
+      </div>
+      <div id="invites"><span class="dim">-</span></div>
+      <div class="hint">注册码一次性使用，24 小时过期。在设备端「设置 → 遥测上报」输入注册码一键注册，自动换取设备专属 Token；设备 Token 可在设备详情里换发或吊销。</div>
+    </div>
+  </section>
+
+  <!-- 设备详情：模态浮层 -->
+  <div id="overlay" onclick="if(event.target===this)closeDetail()">
+    <div id="detail"></div>
+  </div>
+
+  <!-- 逐核等级：弹窗 -->
+  <div id="goverlay" onclick="if(event.target===this)closeGrades()">
+    <div class="gpanel">
+      <button class="x" onclick="closeGrades()">关闭 ✕</button>
+      <h2 id="gtitle">逐核等级</h2>
+      <div class="hint" style="margin-top:0">按封装内各核心的健康度分档（幼体 / 成长期 / 成熟期 / 究极期 / 传说），悬停徽章可查看核心名与健康分。</div>
+      <div id="gbody"><span class="dim">-</span></div>
+    </div>
+  </div>
 </main>
+
+<footer>CORE-BUSY TELEMETRY HUB</footer>
+
 <script>
 "use strict";
 const STAGES = ["幼体","成长期","成熟期","究极期","传说"];
@@ -114,6 +266,7 @@ function fmtSeen(ts) {
   if (diff < 86400) return abs + "（" + Math.round(diff/60) + " 分钟前）";
   return abs + "（" + Math.round(diff/86400) + " 天前）";
 }
+function isOnline(ts) { return !!ts && (Date.now() - new Date(ts).getTime()) / 1000 < 900; }
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "-" : String(s); return d.innerHTML; }
 function gradesBadges(list) {
   if (!list || !list.length) return '<span class="dim">-</span>';
@@ -130,65 +283,124 @@ async function api(path, opts) {
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
+function setConn(ok, text) {
+  const c = $("conn");
+  c.className = "conn " + (ok ? "on" : "off");
+  c.querySelector("span").textContent = text || (ok ? "已连接" : "连接失败");
+}
+function switchView(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.view === name));
+  document.querySelectorAll(".view").forEach(v => v.hidden = v.id !== name);
+  if (name === "v-admin") loadInvites();
+}
 function renderDevices(devs) {
-  $("rows").innerHTML = devs.length ? devs.map(d => {
+  DEVICE_CACHE = devs;
+  let rt = 0, en = 0, on = 0;
+  devs.forEach(d => { rt += d.runtime_total || 0; en += d.energy_total || 0; if (isOnline(d.last_seen)) on++; });
+  $("st-dev").textContent = devs.length;
+  $("st-on").textContent = on;
+  $("st-rt").textContent = fmtDur(rt);
+  $("st-en").textContent = fmtWh(en);
+  let list = devs;
+  if (SORT.key) {
+    const k = SORT.key, dir = SORT.dir;
+    list = devs.slice().sort((a, b) => ((a[k] ?? -1) - (b[k] ?? -1)) * dir);
+  }
+  $("rows").innerHTML = list.length ? list.map(d => {
     const id = esc(d.device_id);
     const cpu = esc(d.cpu_model || "-")
       + (d.cores_logical ? ' <span class="dim">' + d.cores_physical + "C" + d.cores_logical + "T"
         + (d.hybrid ? " 混合" : "") + "</span>" : "");
     const sys = esc(d.os || "-") + ' <span class="dim">v' + esc(d.app_version || "?") + "</span>";
     return "<tr onclick=\"showDetail('" + id + "')\">"
-      + "<td><b>" + esc(d.alias || "(未命名)") + "</b><br><span class='dim' style='font-size:12px'>" + id + "</span></td>"
-      + "<td>" + cpu + "</td><td>" + sys + "</td><td>" + fmtSeen(d.last_seen) + "</td>"
+      + "<td><b>" + esc(d.alias || "(未命名)") + "</b><br><span class='did dim' style='font-size:12px'>" + id + "</span></td>"
+      + "<td>" + cpu + "</td><td>" + sys + "</td>"
+      + "<td><span class='dot " + (isOnline(d.last_seen) ? "on" : "off") + "'></span>" + fmtSeen(d.last_seen) + "</td>"
       + "<td class='num'>" + fmtDur(d.runtime_total) + "</td>"
       + "<td class='num'>" + fmtWh(d.energy_total) + "</td>"
       + "<td class='num'>" + fmtW(d.power_last) + "</td>"
       + "<td class='num'>" + fmtW(d.power_peak) + "</td>"
-      + "<td style='max-width:340px;white-space:normal'>" + gradesBadges(safeGrades(d.cores_grade)) + "</td></tr>";
+      + "<td>" + coreSummary(safeGrades(d.cores_grade)) + "</td></tr>";
   }).join("") : '<tr><td colspan="9" class="dim">暂无设备上报</td></tr>';
 }
 function safeGrades(text) { try { return text ? JSON.parse(text) : null; } catch { return null; } }
 
+// -- 逐核等级：表格摘要 + 弹窗 -------------------------------------------------
+let DEVICE_CACHE = [];
+let SORT = { key: null, dir: -1 };   // dir: -1 降序 / 1 升序；首次点击降序
+function setSort(k) {
+  if (SORT.key === k) SORT.dir *= -1; else SORT = { key: k, dir: -1 };
+  renderDevices(DEVICE_CACHE);
+  updateSortHeads();
+}
+function updateSortHeads() {
+  [["th-rt","累计运行","runtime_total"],["th-en","累计功耗","energy_total"],
+   ["th-pl","上次功耗","power_last"],["th-pk","峰值功耗","power_peak"]]
+  .forEach(([id, label, key]) => {
+    $(id).innerHTML = label + (SORT.key === key ? '<span class="arr">' + (SORT.dir < 0 ? "▼" : "▲") + "</span>" : "");
+  });
+}
+function coreSummary(list) {
+  if (!list || !list.length) return '<span class="dim">-</span>';
+  let max = 0;
+  list.forEach(g => { if ((g.stage ?? 0) > max) max = g.stage ?? 0; });
+  return '<button class="gsum gs' + max + '" title="点击查看逐核等级明细" '
+    + 'onclick="event.stopPropagation();openGrades(this.closest(\'tr\').querySelector(\'.did\').textContent)">'
+    + list.length + ' 核 · ' + esc(STAGES[max] || "-") + '<span class="arr">▸</span></button>';
+}
+function openGrades(id) {
+  const d = DEVICE_CACHE.find(x => x.device_id === id);
+  if (!d) return;
+  const grades = safeGrades(d.cores_grade);
+  $("gtitle").innerHTML = esc(d.alias || "(未命名)") + ' <span class="dim" style="font-weight:400;font-size:13px">· 逐核等级</span>';
+  $("gbody").innerHTML = grades ? gradesBadges(grades) : '<span class="dim">暂无逐核等级数据</span>';
+  $("goverlay").style.display = "block";
+}
+function closeGrades() { $("goverlay").style.display = "none"; }
+
 // -- 注册码管理 ---------------------------------------------------------------
+function renderInvites(r) {
+  const list = r.invites || [];
+  $("invites").innerHTML = list.length ? list.map(i =>
+    '<span class="invite ' + i.status + '">' + esc(i.code)
+    + '<span class="st">' + (INVITE_ST[i.status] || i.status) + "</span>"
+    + (i.status === "active" ? '<span class="x" title="删除" onclick="delInvite(\'' + esc(i.code) + '\')">✕</span>' : "")
+    + "</span>"
+  ).join("") : '<span class="dim">暂无注册码，点击右上角生成。</span>';
+}
 async function loadInvites() {
-  $("admin").style.display = "block";
-  try {
-    const list = (await api("/api/admin/invites")).invites || [];
-    $("invites").innerHTML = list.length ? list.map(i =>
-      '<span class="invite ' + i.status + '">' + esc(i.code)
-      + '<span class="st">' + (INVITE_ST[i.status] || i.status) + "</span>"
-      + (i.status === "active" ? '<span class="x" title="删除" onclick="delInvite(\'' + esc(i.code) + '\')">✕</span>' : "")
-      + "</span>"
-    ).join("") : '<span class="dim">暂无注册码</span>';
-  } catch (e) { $("invites").innerHTML = '<span class="dim">' + esc(e.message) + "</span>"; }
+  try { renderInvites(await api("/api/admin/invites")); }
+  catch (e) { $("invites").innerHTML = '<span class="dim">' + esc(e.message) + "</span>"; }
 }
 async function createInvite() {
   try { await api("/api/admin/invites", { method: "POST" }); loadInvites(); }
-  catch (e) { $("err").textContent = e.message; }
+  catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 async function delInvite(code) {
   try { await api("/api/admin/invites/" + code, { method: "DELETE" }); loadInvites(); }
-  catch (e) { $("err").textContent = e.message; }
+  catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 async function deviceAction(id, action) {
   const verb = action === "revoke" ? "吊销后该设备将无法上报，直到重新注册或换发。" : "换发后旧 Token 立即失效。";
   if (!confirm(action === "revoke" ? "确认吊销该设备 Token？" + verb : "确认换发该设备 Token？" + verb)) return;
   try {
     const r = await api("/api/admin/devices/" + id + "/" + action, { method: "POST" });
-    $("err").textContent = "";
+    $("err").textContent = ""; $("err").style.display = "none";
     alert(action === "revoke" ? "已吊销。" : "新 Token（请到设备设置页更新）:\n" + (r.token || ""));
-  } catch (e) { $("err").textContent = e.message; }
+  } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 
+// -- 设备详情 -----------------------------------------------------------------
+function closeDetail() { $("overlay").style.display = "none"; }
 async function showDetail(id) {
   try {
     const d = await api("/api/devices/" + id);
     const grades = safeGrades(d.cores_grade);
     const hist = d.history || [];
-    let html = '<button class="close" onclick="$(\'detail\').style.display=\'none\'">关闭 ✕</button>'
-      + "<h2>" + esc(d.alias || "(未命名)") + " <span class='dim'>" + esc(id) + "</span></h2>"
-      + '<button class="act" onclick="deviceAction(\'' + id + '\',\'rotate\')">换发 Token</button>'
-      + '<button class="act danger" onclick="deviceAction(\'' + id + '\',\'revoke\')">吊销 Token</button>'
+    let html = '<button class="close" onclick="closeDetail()">关闭 ✕</button>'
+      + "<h2>" + esc(d.alias || "(未命名)") + ' <span class="dim">' + esc(id) + "</span></h2>"
+      + '<button class="btn act" onclick="deviceAction(\'' + id + '\',\'rotate\')">换发 Token</button>'
+      + '<button class="btn act danger" onclick="deviceAction(\'' + id + '\',\'revoke\')">吊销 Token</button>'
       + '<div class="kv">'
       + "<div><b>CPU</b>" + esc(d.cpu_model || "-") + "</div>"
       + "<div><b>核心</b>" + (d.cores_physical ?? "-") + "C" + (d.cores_logical ?? "-") + "T" + (d.hybrid ? "（混合架构）" : "") + "</div>"
@@ -201,16 +413,15 @@ async function showDetail(id) {
       + "<div><b>上次功耗</b>" + fmtW(d.power_last) + "</div>"
       + "<div><b>峰值功耗</b>" + fmtW(d.power_peak) + "</div>"
       + "</div>"
-      + (grades ? "<h2>逐核等级（最新）</h2><div>" + gradesBadges(grades) + "</div>" : "");
+      + (grades ? "<h3>逐核等级（最新）</h3><div>" + gradesBadges(grades) + "</div>" : "");
     if (hist.length >= 2) html += chartHtml(hist);
     $("detail").innerHTML = html;
-    $("detail").style.display = "block";
-    $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  } catch (e) { $("err").textContent = e.message; }
+    $("overlay").style.display = "block";
+  } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 function chartHtml(hist) {
   const rows = hist.slice().reverse();
-  const W = 800, H = 120, P = 8;
+  const W = 800, H = 130, P = 10;
   const xs = i => P + i * (W - 2*P) / (rows.length - 1);
   const line = (pick) => {
     const vals = rows.map(pick).filter(v => v != null);
@@ -220,24 +431,36 @@ function chartHtml(hist) {
       (i ? "L" : "M") + xs(i).toFixed(1) + " " + (H - P - (pick(r) - lo) / span * (H - 2*P)).toFixed(1)
     ).join(" ");
   };
-  return "<h2>历史曲线（最近 " + rows.length + " 次心跳）</h2>"
+  return "<h3>历史曲线（最近 " + rows.length + " 次心跳）</h3>"
     + '<svg class="chart" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none">'
     + '<path d="' + line(r => r.runtime_total) + '" fill="none" stroke="#4CA0E0" stroke-width="1.5"/>'
     + '<path d="' + line(r => r.energy_total) + '" fill="none" stroke="#4EC48F" stroke-width="1.5"/>'
     + "</svg>"
     + '<div class="legend">时间 →<span class="sw" style="background:#4CA0E0"></span>累计运行<span class="sw" style="background:#4EC48F"></span>累计功耗</div>';
 }
+
 async function load() {
-  $("err").textContent = "";
+  $("err").textContent = ""; $("err").style.display = "none";
   try {
-    renderDevices((await api("/api/devices")).devices);
-    loadInvites();
+    const devs = (await api("/api/devices")).devices;
+    renderDevices(devs);
+    setConn(true);
+    // 探测管理员权限：成功 → 显示注册码管理入口；设备 Token → 仅设备总览
+    try {
+      const r = await api("/api/admin/invites");
+      $("tab-admin").style.display = "";
+      renderInvites(r);
+    } catch (e) {
+      if (String(e.message).includes("Token 无效")) throw e;
+      $("tab-admin").style.display = "none";
+      if (!$("v-admin").hidden) switchView("v-devices");
+    }
   }
-  catch (e) { $("err").textContent = e.message; }
+  catch (e) { setConn(false); $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 function saveTokenAndLoad() { localStorage.setItem("corebusy_hub_token", $("token").value.trim()); load(); }
 $("token").value = token();
-if (token()) load(); else $("err").textContent = "请输入后台 Token（服务端 data/token.txt 或部署时设定）";
+if (token()) load(); else { $("err").textContent = "请输入后台 Token（服务端 data/token.txt 或部署时设定）"; $("err").style.display = "block"; }
 setInterval(() => { if (token()) load(); }, 60000);
 </script>
 </body>
