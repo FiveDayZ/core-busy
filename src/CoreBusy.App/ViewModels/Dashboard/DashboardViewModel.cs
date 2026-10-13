@@ -1327,6 +1327,8 @@ public sealed class DashboardViewModel : ObservableObject
         if (!url.StartsWith("http://", System.StringComparison.OrdinalIgnoreCase)
             && !url.StartsWith("https://", System.StringComparison.OrdinalIgnoreCase))
             return;
+        // 根地址自动派生心跳端点（v1.35.2）：填 http://nas:8400/ 也等价于 …/api/heartbeat。
+        url = TelemetryReporter.NormalizeHeartbeatUrl(url);
 
         var nowUtc = System.DateTime.UtcNow;
         if (_telemetryLastReportUtc == System.DateTime.MinValue)
@@ -1408,7 +1410,7 @@ public sealed class DashboardViewModel : ObservableObject
     {
         try
         {
-            var url = _settings.TelemetryServerUrl.Trim();
+            var url = TelemetryReporter.NormalizeHeartbeatUrl(_settings.TelemetryServerUrl);
             var token = _settings.TelemetryToken.Trim();
             if (!_settings.TelemetryEnabled || url.Length == 0 || token.Length == 0)
                 return;

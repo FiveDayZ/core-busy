@@ -485,7 +485,7 @@
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
                         <TextBlock Text="数据只发往下面填写的后台地址（hub/ 目录的 Docker 服务），不经过任何第三方服务器；关闭后立即停止上报。"
                                    Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
-                        <TextBlock Text="服务器地址（如 http://192.168.1.10:8400/api/heartbeat）"
+                        <TextBlock Text="服务器地址（根地址或完整端点均可，如 http://192.168.1.10:8400）"
                                    Style="{StaticResource OptionHint}" Margin="25,10,0,0" />
                         <TextBox x:Name="TelemetryUrlBox" Style="{StaticResource OptionInput}" Margin="25,4,25,0" />
                         <TextBlock Text="访问 Token（设备专属 Token 由注册自动填入，也可手动粘贴）" Style="{StaticResource OptionHint}" Margin="25,8,0,0" />

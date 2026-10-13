@@ -138,6 +138,20 @@ public static class TelemetryReporter
     public static string? LastError { get; private set; }
 
     /// <summary>
+    /// 心跳端点归一化（v1.35.2）。设置页允许填根地址（如 <c>http://nas:8400/</c>）——
+    /// 注册流程本来就会派生 /api/enroll，但心跳曾把 URL 原样 POST，填根地址时全部
+    /// 404 静默失败（真机踩坑：注册成功而心跳从不到达，first_seen 停在注册时刻）。
+    /// 以 /api/heartbeat 结尾 = 原样；否则按根地址追加端点。单点归一，两处调用共用。
+    /// </summary>
+    public static string NormalizeHeartbeatUrl(string url)
+    {
+        var trimmed = url.Trim();
+        if (trimmed.EndsWith("/api/heartbeat", System.StringComparison.OrdinalIgnoreCase))
+            return trimmed;
+        return trimmed.TrimEnd('/') + "/api/heartbeat";
+    }
+
+    /// <summary>
     /// 发送一次心跳。成功 = 2xx；网络失败 / 非法地址 / 服务器拒绝一律返回 false 且不抛出。
     /// 12 秒硬超时：上报线程在后台，但退出时的 best-effort 补发要等它，不能无限挂。
     /// </summary>
