@@ -52,3 +52,7 @@ python scripts/lint_ui.py            # XAML 结构 + 绑定静态检查
 
 发布产物见 `dist/`：full（自包含，约 159 MB）/ lite（4.9 MB，需系统 .NET 8 桌面运行时）。
 EXP 曲线推导见 [docs/EXP-DESIGN.md](docs/EXP-DESIGN.md)。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
