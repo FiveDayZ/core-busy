@@ -90,6 +90,10 @@ public partial class SettingsWindow : Window
         // 开机启动以注册表实况回显（v1.26.5）：settings.json 不记这份状态，
         // 用户在任务管理器里手动禁用后这里必须如实显示未启用。
         AutoStartCheck.IsChecked = Services.AutoStartService.IsEnabled();
+
+        // 软件更新（v1.31.0）：自动检查开关 + 当前版本回显。
+        CheckUpdatesCheck.IsChecked = settings.CheckUpdatesOnStartup;
+        UpdateStatusText.Text = $"当前版本 {Services.UpdateService.CurrentVersionText}。";
     }
 
     /// <summary>填充「性能优化」页：能力状态、电源预设、规则列表、游戏模式。</summary>
@@ -322,6 +326,7 @@ public partial class SettingsWindow : Window
             SensorsEnabled = SensorsCheck.IsChecked == true,
             GameDetectionEnabled = GameCheck.IsChecked == true,
             CloseToTray = CloseToTrayCheck.IsChecked == true,
+            CheckUpdatesOnStartup = CheckUpdatesCheck.IsChecked == true,
             Optimization = optimization,
         };
 
@@ -332,6 +337,91 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCancel(object sender, RoutedEventArgs e) => DialogResult = false;
+
+    // ── 软件更新（v1.31.0）────────────────────────────────────────────
+    // 检查是动作不是配置：点了立即执行并回显，不等到「确定」。发现新版本时
+    // 先弹询问框，用户同意才进入下载（带进度对话框 + sha256 校验）。
+
+    /// <summary>最近一次检查发现的新版本；null = 尚未发现（「查看发布页」按钮隐藏）。</summary>
+    private Services.UpdateInfo? _latestUpdate;
+
+    private async void OnCheckUpdate(object sender, RoutedEventArgs e)
+    {
+        CheckUpdateButton.IsEnabled = false;
+        OpenReleaseButton.Visibility = Visibility.Collapsed;
+        UpdateStatusText.Text = "正在检查 GitHub Releases…";
+
+        var result = await Services.UpdateService.CheckLatestAsync().ConfigureAwait(true);
+
+        CheckUpdateButton.IsEnabled = true;
+        switch (result.Outcome)
+        {
+            case Services.UpdateCheckOutcome.UpToDate:
+                UpdateStatusText.Text = $"已是最新版本（{Services.UpdateService.CurrentVersionText}）。";
+                break;
+
+            case Services.UpdateCheckOutcome.UpdateAvailable when result.Info is { } info:
+                _latestUpdate = info;
+                UpdateStatusText.Text = info.AssetSize > 0
+                    ? $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}），安装包 {info.AssetSize / 1048576.0:0.0} MB。"
+                    : $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）。";
+                OpenReleaseButton.Visibility = Visibility.Visible;
+
+                if (MessageBox.Show(
+                        this,
+                        $"发现 CORE-BUSY 新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）。\n\n是否下载并安装？",
+                        "CORE-BUSY 更新",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+                {
+                    await StartUpdateDownloadAsync(info).ConfigureAwait(true);
+                }
+
+                break;
+
+            default:
+                UpdateStatusText.Text = "检查失败：" + result.Detail;
+                break;
+        }
+    }
+
+    private void OnOpenReleasePage(object sender, RoutedEventArgs e)
+    {
+        if (_latestUpdate is null)
+            return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = $"{Services.UpdateService.ReleasesPageUrl}/tag/{_latestUpdate.Tag}",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    /// <summary>下载并询问安装；返回 true 表示已启动换版脚本，此时应关窗退出主程序。</summary>
+    private async Task<bool> StartUpdateDownloadAsync(Services.UpdateInfo info)
+    {
+        var applied = await Services.UpdateService.DownloadApplyWithUiAsync(info, this).ConfigureAwait(true);
+        if (!applied)
+            return false;
+
+        // 先关掉本模态对话框，再走显式退出（跳过"关闭到托盘"拦截）。
+        DialogResult = true;
+        if (Application.Current.MainWindow is MainWindow main)
+        {
+            main.ExitForUpdate();
+        }
+        else
+        {
+            Application.Current.Shutdown();
+        }
+
+        return true;
+    }
 
     /// <summary>打开核心选择器，返回选中的掩码；取消或拓扑不可用时返回 null。</summary>
     private ulong? OpenCorePicker(ulong initialMask)

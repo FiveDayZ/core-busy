@@ -445,6 +445,23 @@
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
                         <TextBlock Text="注册表为唯一事实来源 —— 在别处手动禁用后，这里打开时会如实显示未启用。"
                                    Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
+
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+
+                        <!--  软件更新（v1.31.0）：检查只读 GitHub Releases，不采集不上传任何数据。  -->
+                        <TextBlock Text="软件更新" Style="{StaticResource OptionLabel}" />
+                        <CheckBox x:Name="CheckUpdatesCheck" Style="{StaticResource OptionCheck}" Margin="0,8,0,0"
+                                  Content="启动时自动检查更新" />
+                        <TextBlock Text="有新版本时在启动后询问是否下载安装；安装包下载后先做 sha256 校验再换版。"
+                                   Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
+                        <StackPanel Orientation="Horizontal" Margin="25,10,0,0">
+                            <Button x:Name="CheckUpdateButton" Content="立即检查更新" Style="{StaticResource MiniButton}"
+                                    Click="OnCheckUpdate" />
+                            <Button x:Name="OpenReleaseButton" Content="查看发布页" Style="{StaticResource MiniButton}"
+                                    Margin="8,0,0,0" Visibility="Collapsed" Click="OnOpenReleasePage" />
+                        </StackPanel>
+                        <TextBlock x:Name="UpdateStatusText" Style="{StaticResource OptionHint}" Margin="25,8,0,0"
+                                   TextWrapping="Wrap" />
                     </StackPanel>
                 </ScrollViewer>
 

@@ -462,7 +462,11 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                     _maxCoreClockMhz = pstateMhz;
 
                 var effectiveMhz = double.NaN;
-                if (sensor.CoreEffectiveClockMhz.TryGetValue(i, out var sensorEffective) && sensorEffective >= 0)
+                // 0 MHz 不是读数（v1.32.1 修错）：部分平台的 "(Effective)" 传感器存在但恒报 0，
+                // 放行会把账本 MaxGhz 写成 0（显示"峰值 0.00 GHz"），且峰值档阈值 0×0.99=0
+                // 让所有帧都被判为在峰值档、时长空转累加。空闲核的有效频率实测最低 39 MHz，
+                // 恒 0 只可能是失效读数——按"没有证据"降级 NaN，与显示口径的 mhz>100 守卫同源。
+                if (sensor.CoreEffectiveClockMhz.TryGetValue(i, out var sensorEffective) && sensorEffective > 0)
                     effectiveMhz = sensorEffective;
 
                 _coreEffectiveGhz[i] = effectiveMhz >= 0 ? Math.Round(effectiveMhz / 1000.0, 3) : double.NaN;

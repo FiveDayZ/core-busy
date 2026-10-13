@@ -22,12 +22,16 @@ public static class UiTheme
     private static Brush[] _stageBorders =
         [TileBorderBrush, TileBorderBrush, TileBorderBrush, TileBorderBrush, Frozen("#E8C56A")];
 
+    /// <summary>
+    /// 成长阶段索引（v1.32.0 抽取为单一边界源）：幼体0 / 成长期1 / 成熟期2 / 究极期3 / 传说4。
+    /// 边界与 <see cref="CoreLevelVm.StageText"/> 逐档一致（10 / 30 / 60 / 99），
+    /// 单核边框与整板铜层都从这里取阶段，杜绝两处口径漂移。
+    /// </summary>
+    public static int StageIndexOf(int level)
+        => level switch { >= 99 => 4, >= 60 => 3, >= 30 => 2, >= 10 => 1, _ => 0 };
+
     /// <summary>按等级取阶段边框：幼体(1-9) / 成长期(10-29) / 成熟期(30-59) / 究极期(60-98) / 传说(99)。</summary>
-    public static Brush StageBorderFor(int level)
-    {
-        var index = level switch { >= 99 => 4, >= 60 => 3, >= 30 => 2, >= 10 => 1, _ => 0 };
-        return _stageBorders[index];
-    }
+    public static Brush StageBorderFor(int level) => _stageBorders[StageIndexOf(level)];
 
     internal static void Apply(
         string tileCard, string tileBorder, string tileDangerCard, string tileDangerBorder,

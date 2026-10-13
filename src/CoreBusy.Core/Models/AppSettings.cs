@@ -60,6 +60,12 @@ public sealed class AppSettings
     /// <summary>点击关闭（标题栏 X / Alt+F4）时最小化到托盘而不是退出。默认启用；托盘图标右键可退出。</summary>
     public bool CloseToTray { get; set; } = true;
 
+    /// <summary>
+    /// 启动时自动检查 GitHub Releases 更新（v1.31.0）。默认开启；旧版 settings.json
+    /// 缺该字段时 System.Text.Json 不会触碰属性，保持初始值 true（向后兼容）。
+    /// </summary>
+    public bool CheckUpdatesOnStartup { get; set; } = true;
+
     // ── 整机功耗估算的逐部件可校准系数（v1.20.1）────────────────────────
     //    为什么从 v1.20.0 的「一个斜率 k + 一个底数 b」改成分项：那一版整机口径是
     //    「整机 ≈ k × CPU封装功耗 + b」，只有一个输入，于是"CPU 之外的一切"全被压进 k 与 b；

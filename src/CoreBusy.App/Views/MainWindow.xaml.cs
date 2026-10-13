@@ -189,6 +189,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 更新安装退出（v1.31.0）：标记显式退出后关闭窗口，跳过"关闭到托盘"拦截 ——
+    /// 暂存更新脚本在本进程退出、exe 锁释放后接管换版并重启。
+    /// </summary>
+    public void ExitForUpdate()
+    {
+        _realExit = true;
+        Close();
+    }
+
+    /// <summary>
     /// 以管理员身份重启本程序（v1.16.1，概览卡右上角的提示标触发）。
     /// <para>
     /// CPU 温度/功耗、风扇转速、硬盘温度都要经 LibreHardwareMonitor 的内核驱动（PawnIO）读取，

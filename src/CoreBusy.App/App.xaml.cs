@@ -67,6 +67,35 @@ public partial class App : Application
 
         MainWindow = window;
         window.Show();
+
+        // 启动自动检查更新（v1.31.0）：窗口出现后异步执行，检查失败保持静默 ——
+        // 启动路径上的任何网络问题都不该打扰用户。发现新版本时弹询问框。
+        if (settings.CheckUpdatesOnStartup)
+        {
+            _ = RunStartupUpdateCheckAsync(window);
+        }
+    }
+
+    /// <summary>启动更新检查（v1.31.0）：仅在 CheckUpdatesOnStartup 开启时由 OnStartup 触发。</summary>
+    private static async Task RunStartupUpdateCheckAsync(Window window)
+    {
+        var result = await UpdateService.CheckLatestAsync().ConfigureAwait(true);
+        if (result.Outcome != UpdateCheckOutcome.UpdateAvailable || result.Info is not { } info)
+            return;
+
+        var applied = await UpdateService.DownloadApplyWithUiAsync(info, window).ConfigureAwait(true);
+        if (!applied)
+            return;
+
+        // 退出本进程交给暂存脚本接管（脚本等锁释放后换 exe 并重启）。
+        if (Application.Current.MainWindow is MainWindow main)
+        {
+            main.ExitForUpdate();
+        }
+        else
+        {
+            Application.Current.Shutdown();
+        }
     }
 
     /// <summary>

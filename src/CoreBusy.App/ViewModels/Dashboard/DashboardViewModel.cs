@@ -1259,7 +1259,9 @@ public sealed class DashboardViewModel : ObservableObject
                 entry.PeakAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
             }
 
-            if (!double.IsNaN(core.EffectiveFrequencyGHz)
+            // v1.32.1 加下限：0 GHz 不是合法读数（通电必 >0）。恒 0 的失效传感器读数
+            // 曾把 MaxGhz 钉死在 0，峰值恒显 "0.00 GHz"。
+            if (!double.IsNaN(core.EffectiveFrequencyGHz) && core.EffectiveFrequencyGHz > 0
                 && (double.IsNaN(entry.MaxGhz) || core.EffectiveFrequencyGHz > entry.MaxGhz))
             {
                 entry.MaxGhz = core.EffectiveFrequencyGHz;
@@ -1276,7 +1278,9 @@ public sealed class DashboardViewModel : ObservableObject
             // 峰值累计持续时长（v1.30.0）：当前有效频率 ≥ 账本峰值（MaxGhz）的 99% 视为
             // 「在峰值档」，把本帧时长累进账本（只增不减）。峰值带随 MaxGhz 新高收紧 ——
             // 累计口径是「各历史峰值档时长之和」，与 MaxGhz 的「只升不降」同源。
-            if (peakDt > 0 && !double.IsNaN(entry.MaxGhz)
+            // v1.32.1 加 MaxGhz>0 门：MaxGhz 为 0 时阈值 0×0.99=0，所有帧都会被判成
+            // 「在峰值档」，出现"峰值恒显 0、累计时长却一直涨"的自相矛盾（用户实测）。
+            if (peakDt > 0 && entry.MaxGhz > 0
                 && !double.IsNaN(core.EffectiveFrequencyGHz)
                 && core.EffectiveFrequencyGHz >= entry.MaxGhz * 0.99)
             {
@@ -1756,6 +1760,30 @@ public sealed class DashboardViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 整板阶段（v1.32.0）：全核**平均**等级所处阶段驱动 PCB 铜层亮度 ——
+    /// 均值口径让每一颗核的升级都推动整板演进（短板制会让板子长期停在幼体色）。
+    /// 阶段索引只在跃迁时落到 PcbBoardControl（no-op 比对在控制内部）。
+    /// </summary>
+    private int _boardStage = -1;
+
+    private void ApplyBoardStage()
+    {
+        if (_allCores.Count == 0)
+            return;
+
+        double sum = 0;
+        foreach (var core in _allCores)
+            sum += core.Level.Level;
+
+        var stage = UiTheme.StageIndexOf((int)(sum / _allCores.Count));
+        if (stage == _boardStage)
+            return;
+
+        _boardStage = stage;
+        CoreBusy.App.Controls.PcbBoardControl.ApplyStage(stage);
+    }
+
+    /// <summary>
     /// 实时视图：核心 Tile 按自然核序就地更新，并确保分区顺序已复位
     /// （从累积视图切回时列表仍是按名次排过的）。
     /// </summary>
@@ -1771,6 +1799,7 @@ public sealed class DashboardViewModel : ObservableObject
         }
 
         RefreshGroupMode();
+        ApplyBoardStage();
     }
 
     /// <summary>
@@ -1807,6 +1836,7 @@ public sealed class DashboardViewModel : ObservableObject
         }
 
         RefreshGroupMode();
+        ApplyBoardStage();
     }
 
     /// <summary>

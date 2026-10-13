@@ -96,28 +96,13 @@ internal static class CpuIdTopologyProbe
             var vendor = DetectVendor(cpuId);
             var maxLeaf = cpuId.Read(0, 0).Eax;
 
-            // Intel 混合架构判别：0x1F 各子叶的核心类型同时含 P(Core,0x40) 与 E(Atom,0x20)。
-            var hybrid = vendor == VendorIntel && maxLeaf >= 0x1F && IsIntelHybrid(cpuId);
-            if (hybrid && maxLeaf < 0x1A)
-            {
-                // 核心类型无法读取就无法正确归并（统一移位必然并错 E 核），保守放弃，维持 GLPI 结果。
-                reason = "hybrid cpu without cpuid leaf 0x1A (core type unavailable)";
-                return null;
-            }
-
-            // 混合架构：按核心类型分别取每核线程数；同构：统一每核线程数。
-            var tpcByType = hybrid ? DetectThreadsPerCoreByType(cpuId) : null;
-            var threadsPerCore = hybrid ? 0 : DetectThreadsPerCore(cpuId, vendor, logicalCount);
-            var smtShift = threadsPerCore switch
-            {
-                >= 8 => 3,
-                >= 4 => 2,
-                >= 2 => 1,
-                _ => 0,
-            };
+            // CPUID.1AH（原生核心类型）可用性：混合架构归并的唯一类型来源。
+            // 注意**不能**用 CPUID.1F 的 EAX[31:24] 判混合 —— 该字段是"层级类型"
+            // （1=SMT、2=Core…），永远取不到核心类型值 0x40/0x20（v1.32.1 修错，见下）。
+            var canReadCoreType = vendor == VendorIntel && maxLeaf >= 0x1A;
 
             var apicByOs = new int[logicalCount];
-            var rawTypeByOs = hybrid ? new byte[logicalCount] : null;
+            var rawTypeByOs = canReadCoreType ? new byte[logicalCount] : null;
             var seenApicIds = new HashSet<int>();
             for (var os = 0; os < logicalCount; os++)
             {
@@ -154,20 +139,64 @@ internal static class CpuIdTopologyProbe
                 }
 
                 apicByOs[os] = apicId;
-                if (hybrid)
+                if (canReadCoreType)
                 {
-                    // CPUID.1AH.EAX[31:24] = 当前处理器的核心类型（0x40=Core/P，0x20=Atom/E）。
+                    // CPUID.1AH.EAX[31:24] = 当前处理器的原生核心类型（0x40=Core/P，0x20=Atom/E）。
                     rawTypeByOs![os] = (byte)((cpuId.Read(0x1A, 0).Eax >> 24) & 0xFF);
                 }
             }
+
+            // 混合架构判定（v1.32.1 修错）：以逐逻辑处理器读到的 CPUID.1AH 原生核心类型为准 ——
+            // 同时出现 Core(0x40) 与 Atom(0x20) 才是 P/E 混合。
+            // 旧实现扫描 CPUID.1F 子叶的 EAX[31:24] 找 0x40/0x20，但 1F 的该字段是"层级类型"
+            // （1=SMT、2=Core，见 SDM "Extended Topology Enumeration Leaf"），恒找不到核心类型值，
+            // 判别在真实硬件上永远返回 false —— U300 因此落回统一移位路径，相邻 E 核被两两并组
+            // （5C6T 读成 3C6T，用户实测）。v1.27.3 的归并纯函数是对的，只是喂不进真实硬件的类型数据。
+            bool hasCore = false, hasAtom = false;
+            if (canReadCoreType)
+            {
+                foreach (var t in rawTypeByOs!)
+                {
+                    if (t == 0x40)
+                        hasCore = true;
+                    else if (t == 0x20)
+                        hasAtom = true;
+                }
+            }
+
+            var hybrid = canReadCoreType && hasCore && hasAtom;
+
+            // 混合架构：按核心类型分别取每核线程数；同构：统一每核线程数。
+            var tpcByType = hybrid
+                ? new Dictionary<byte, int>
+                {
+                    // P 域（Core）每核线程数取 CPUID.1F SMT 层级的 EBX（存在 SMT 才有该层级；
+                    // 无 SMT 的混合部件如 LNL 扫不到 → 1，P 域逐处理器自成核心）。
+                    [0x40] = DetectSmtWidthFromLeaf1F(cpuId),
+                    // E 域（Atom）无 SMT，每核 1 线程。类型之外的值由归并侧按 1 兜底。
+                    [0x20] = 1,
+                }
+                : null;
+            var threadsPerCore = hybrid ? 0 : DetectThreadsPerCore(cpuId, vendor, logicalCount);
+            var smtShift = threadsPerCore switch
+            {
+                >= 8 => 3,
+                >= 4 => 2,
+                >= 2 => 1,
+                _ => 0,
+            };
 
             int[] coreByOs;
             CoreClass[]? typeByOs;
             if (hybrid)
             {
                 (coreByOs, typeByOs) = GroupHybridByApic(apicByOs, rawTypeByOs!, tpcByType!);
-                reason = $"ok vendor={vendor} hybrid tpcByType={DescribeTpcByType(tpcByType!)} " +
-                         $"cores={coreByOs.Distinct().Count()}";
+                var typeHistogram = rawTypeByOs!
+                    .GroupBy(t => t)
+                    .OrderBy(g => g.Key)
+                    .Select(g => $"0x{g.Key:X}x{g.Count()}");
+                reason = $"ok vendor={vendor} hybrid types={string.Join(",", typeHistogram)} " +
+                         $"tpcByType={DescribeTpcByType(tpcByType!)} cores={coreByOs.Distinct().Count()}";
             }
             else
             {
@@ -188,47 +217,29 @@ internal static class CpuIdTopologyProbe
     }
 
     /// <summary>
-    /// Intel 混合架构判别：扫描 CPUID.1F 各子叶的核心类型（EAX[31:24]），
-    /// 同时出现 Core(0x40) 与 Atom(0x20) 即为混合架构（P 核 + E 核并存）。
+    /// 从 CPUID.1F 取 SMT 层级的每核线程数：扫描各子叶，"层级类型"（ECX[15:8]）为 1（SMT）
+    /// 的子叶 EBX 即每核线程数。混合架构上只有带 SMT 的域（P 核）才有该层级；
+    /// 无 SMT 的部件（如 LNL）扫不到 → 返回 1（每个逻辑处理器自成核心）。
+    /// <para>
+    /// v1.32.1 修错：旧 <c>DetectThreadsPerCoreByType</c> 把 ECX[15:8] 当"核心类型"收集，
+    /// 但该字段是**层级类型**（1=SMT、2=Core…），收集到的键恒为 0x01，与 1AH 的 0x40/0x20
+    /// 永远对不上——归并侧会全体回退 tpc=1。P/E 两域的每核线程数差（2 vs 1）本就无法从
+    /// 一张同构的 1F 表里按类型拆出，故 P 域取 SMT 层级宽度、E 域固定 1，才是可落地的口径。
+    /// </para>
     /// </summary>
-    private static bool IsIntelHybrid(CpuIdAccessor cpuId)
+    private static int DetectSmtWidthFromLeaf1F(CpuIdAccessor cpuId)
     {
-        bool core = false, atom = false;
-        for (uint sub = 0; sub < 8 && !(core && atom); sub++)
-        {
-            var r = cpuId.Read(0x1F, (int)sub);
-            if (r.Eax == 0 && r.Ebx == 0 && r.Ecx == 0)
-                break; // 无效子叶（超出实际层级数）。
-
-            var type = (r.Eax >> 24) & 0xFF;
-            if (type == 0x40)
-                core = true;
-            else if (type == 0x20)
-                atom = true;
-        }
-
-        return core && atom;
-    }
-
-    /// <summary>
-    /// 混合架构下按核心类型取每核线程数：扫描 CPUID.1F 各子叶，
-    /// SMT 层级（ECX[7:0]==0）的 EBX 即该核心类型（ECX[15:8]）的每核线程数。
-    /// P 域典型为 2，E 域无 SMT 子叶时缺失（归并侧按 1 处理）。
-    /// </summary>
-    private static Dictionary<byte, int> DetectThreadsPerCoreByType(CpuIdAccessor cpuId)
-    {
-        var tpcByType = new Dictionary<byte, int>();
         for (uint sub = 0; sub < 8; sub++)
         {
             var r = cpuId.Read(0x1F, (int)sub);
             if (r.Eax == 0 && r.Ebx == 0 && r.Ecx == 0)
                 break; // 无效子叶（超出实际层级数）。
 
-            if ((r.Ecx & 0xFF) == 0 && r.Ebx > 0)
-                tpcByType.TryAdd((byte)((r.Ecx >> 8) & 0xFF), (int)r.Ebx);
+            if (((r.Ecx >> 8) & 0xFF) == 1 && r.Ebx > 0)
+                return (int)r.Ebx;
         }
 
-        return tpcByType;
+        return 1;
     }
 
     private static string DescribeTpcByType(Dictionary<byte, int> tpcByType)
@@ -419,21 +430,15 @@ internal static class CpuIdTopologyProbe
                 intelBaseMhz = intel16RawMhz;
         }
 
-        // Intel 混合架构检测：0x1F 各子叶的核心类型同时含 P(Core,0x40) 与 E(Atom,0x20)。
+        // 原生核心类型枚举可用性（v1.32.1 修错）：以 CPUID.1AH 是否能读到合法核心类型
+        // （0x40=Core / 0x20=Atom）为准。旧实现扫描 1F 子叶 EAX[31:24] 找 0x40/0x20，
+        // 但 1F 该字段是层级类型（1=SMT、2=Core），真实硬件上恒判 false。
+        // 注意 E-only 派生款（如 N305）也会报 1AH（类型 0x20），本标志含义是
+        // "芯片自报原生核心类型"，真正的 P/E 混合判定以 TryProbe 的逐处理器数据为准。
         var hybrid = false;
-        if (isIntel && maxLeaf >= 0x1F)
+        if (isIntel && maxLeaf >= 0x1A)
         {
-            bool core = false, atom = false;
-            for (uint sub = 0; sub < 8 && !(core && atom); sub++)
-            {
-                var type = (cpuId.Read(0x1F, (int)sub).Eax >> 24) & 0xFF;
-                if (type == 0x40)
-                    core = true;
-                else if (type == 0x20)
-                    atom = true;
-            }
-
-            hybrid = core && atom;
+            hybrid = ((cpuId.Read(0x1A, 0).Eax >> 24) & 0xFF) is 0x40 or 0x20;
         }
 
         info = new StaticCpuInfo(vendorId.Trim(), brand, intelBaseMhz, hybrid, intel16RawMhz, intelBusMhz);

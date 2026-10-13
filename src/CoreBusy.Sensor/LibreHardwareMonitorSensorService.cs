@@ -202,10 +202,12 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
 
         try
         {
+            string? cpuNodeName = null;
             foreach (var hardware in _computer.Hardware)
             {
                 if (hardware.HardwareType == HardwareType.Cpu)
                 {
+                    cpuNodeName ??= hardware.Name;
                     ReadCpuSensors(hardware, ref packageTemp, ref maxCoreTemp, ref firstTemp,
                                    ref packagePower,
                                    clocks, effectiveClocks, voltages);
@@ -214,6 +216,20 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                 {
                     activeFanCount = ReadFanSensor(hardware, ref fanRpm);
                 }
+            }
+
+            // MSR 封装功耗兜底（v1.32.1）：LHM 的功率传感器缺席（新 CPU 未收录等）时，
+            // Intel 平台改从 RAPL 能量计数器差分求功率；AMD 无兜底可行性（见读数类注释）。
+            if (packagePower is null && cpuNodeName is not null
+                && cpuNodeName.Contains("Intel", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_msrPackagePowerResolved)
+                {
+                    _msrPackagePowerResolved = true;
+                    _msrPackagePower = MsrPackagePowerReader.TryCreate();
+                }
+
+                packagePower = _msrPackagePower?.ReadPower();
             }
         }
         catch (Exception)
@@ -878,5 +894,142 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
     /// </summary>
     private static bool IsPlausibleFanRpm(double rpm) => rpm is >= 200 and <= 5000;
 
-    public void Dispose() => _computer.Close();
+    public void Dispose()
+    {
+        _computer.Close();
+        try { _msrPackagePower?.Dispose(); } catch { }
+    }
+
+    // ── MSR 封装功耗兜底（v1.32.1）─────────────────────────────────────
+
+    private MsrPackagePowerReader? _msrPackagePower;
+    private bool _msrPackagePowerResolved;
+
+    /// <summary>
+    /// Intel RAPL 封装能量计数器（MSR 0x611）差分求功率的兜底读数。
+    /// <para>
+    /// <b>为什么需要它。</b>LHM 的 CPU 功率传感器来自各厂商驱动实现，个别平台
+    /// （新 CPU 未被 LHM 收录 / 驱动层不暴露）会缺席，用户看到的正是"功耗传感器不可用"。
+    /// 而 RAPL 能量计数器从 Sandy Bridge 起在全部 Intel 平台可用，走 PawnIO MSR 通道
+    /// （与 <see cref="ProbeIntelBaseClock"/> 同一前提：提权 + PawnIO）即可自算封装功率，
+    /// 不引入新的权限要求，也无新增失败模式：读不到就维持 "-"。
+    /// </para>
+    /// <para>
+    /// <b>为什么只做 Intel。</b>AMD 的能量 MSR（0xC0010299）经同一 PawnIO 通道实测
+    /// <b>恒读 0</b>（.workbuddy/_msrprobe 取证，2026-10-13，5900HX 提权：两轮读数均 0，
+    /// 同一刻 LHM 实测封装功率 20.04 W）——没有可用的兜底数据源，AMD 设备维持 "-"，
+    /// 绝不伪造。
+    /// </para>
+    /// </summary>
+    private sealed class MsrPackagePowerReader
+    {
+        private readonly object _module;
+        private readonly MethodInfo _readMsr;
+        private readonly double _joulesPerCount;
+
+        private bool _primed;
+        private uint _lastCounts;
+        private DateTime _lastUtc = DateTime.UtcNow;
+        private int _zeroStreak;
+        private bool _broken;
+
+        private MsrPackagePowerReader(object module, MethodInfo readMsr, double joulesPerCount)
+        {
+            _module = module;
+            _readMsr = readMsr;
+            _joulesPerCount = joulesPerCount;
+        }
+
+        /// <summary>
+        /// 尝试建立读数器。PawnIO 缺失 / 未提权 / 反射失败返回 null（调用方永久放弃，
+        /// 与"缺驱动/需提权"的既有降级路径合流）。
+        /// </summary>
+        public static MsrPackagePowerReader? TryCreate()
+        {
+            try
+            {
+                var asm = typeof(Computer).Assembly;
+                var msrType = asm.GetType("LibreHardwareMonitor.PawnIo.IntelMsr", throwOnError: false)
+                              ?? FindIntelMsrType(asm);
+                if (msrType is null)
+                    return null;
+
+                var readMsr = msrType.GetMethod("ReadMsr", new[] { typeof(uint), typeof(ulong).MakeByRefType() });
+                if (readMsr is null)
+                    return null;
+
+                var module = Activator.CreateInstance(msrType)!;
+
+                // RAPL 电源单位寄存器（MSR_RAPL_POWER_UNIT，0x606）：bits[12:8] =
+                // Energy Status Unit，1 count = 2^-EU 焦耳。读不到按 Intel 默认档 EU=0x0E。
+                var eu = 14;
+                if (TryReadMsr(module, readMsr, 0x606, out var unit))
+                {
+                    var bits = (int)((unit >> 8) & 0x1F);
+                    if (bits is > 0 and <= 20)
+                        eu = bits;
+                }
+
+                return new MsrPackagePowerReader(module, readMsr, 1.0 / (1 << eu));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 差分求功率（W）。首帧建立基线返回 null；计数器不动（Δ=0）说明寄存器不可信，
+        /// 连续两次即断路（真实 CPU 即使深怠每秒也有上万 count 的增量）。
+        /// </summary>
+        public double? ReadPower()
+        {
+            if (_broken)
+                return null;
+
+            if (!TryReadMsr(_module, _readMsr, 0x611, out var value))
+            {
+                _broken = true;
+                return null;
+            }
+
+            var now = DateTime.UtcNow;
+            // PKG_ENERGY_STATUS 只用低 32 位；uint 减法天然处理回绕（约 1.6 小时一圈 @45W）。
+            var counts = (uint)value;
+
+            if (!_primed)
+            {
+                _primed = true;
+                _lastCounts = counts;
+                _lastUtc = now;
+                return null;
+            }
+
+            var delta = counts - _lastCounts;
+            var seconds = (now - _lastUtc).TotalSeconds;
+            _lastCounts = counts;
+            _lastUtc = now;
+
+            if (seconds <= 0)
+                return null;
+
+            if (delta == 0)
+            {
+                if (++_zeroStreak >= 2)
+                    _broken = true;
+                return null;
+            }
+
+            _zeroStreak = 0;
+            var watt = delta * _joulesPerCount / seconds;
+
+            // 合理域与功耗模型同源（MaxCpuWatt=1000 量级）：越界值不采信也不断路，等下一帧。
+            return double.IsFinite(watt) && watt > 0 && watt <= 1000.0 ? watt : null;
+        }
+
+        public void Dispose()
+        {
+            try { _readMsr.DeclaringType?.GetMethod("Close")?.Invoke(_module, null); } catch { }
+        }
+    }
 }

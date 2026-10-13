@@ -271,16 +271,36 @@ public static class CoreExpStore
             TotalLevels = e.TotalLevels,
         };
 
-        public CoreExpEntry ToEntry() => new()
+        // v1.32.1 存量账本修复：MaxGhz ≤ 0 不是合法读数（通电必 >0），它是
+        // 「有效频率传感器恒报 0 被当读数」时期的污染值——峰值恒显 "0.00 GHz"，
+        // 且峰值档阈值 0×0.99=0 让 PeakSeconds 把所有帧都累计进去（用户实测
+        // "峰值 0、累计时长却大于 0"）。修复规则：
+        //   · MaxGhz ≤ 0（含 NaN）→ NaN（回到"没有证据"）；
+        //   · 该状态下已累计的 PeakSeconds 是在失效阈值下记的假证据 → 一并作废（NaN）。
+        // MaxGhz > 0 的账本不受影响：其 PeakSeconds 是按 0.99×MaxGhz 的有效阈值累计的。
+        // （随后由 >0 门与采集层 0 值守卫保证不再产生新的污染。）
+        public CoreExpEntry ToEntry()
         {
-            LoadCoreMinutes = LoadCoreMinutes,
-            FloorCoreMinutes = FloorCoreMinutes,
-            PeakPercent = Parse(PeakPercent),
-            MaxGhz = Parse(MaxGhz),
-            PeakSeconds = Parse(PeakSeconds),
-            PeakAt = PeakAt,
-            TotalLevels = TotalLevels,
-        };
+            var maxGhz = Parse(MaxGhz);
+            var peakSeconds = Parse(PeakSeconds);
+            if (double.IsNaN(maxGhz) || maxGhz <= 0)
+            {
+                maxGhz = double.NaN;
+                if (peakSeconds > 0)
+                    peakSeconds = double.NaN;
+            }
+
+            return new CoreExpEntry
+            {
+                LoadCoreMinutes = LoadCoreMinutes,
+                FloorCoreMinutes = FloorCoreMinutes,
+                PeakPercent = Parse(PeakPercent),
+                MaxGhz = maxGhz,
+                PeakSeconds = peakSeconds,
+                PeakAt = PeakAt,
+                TotalLevels = TotalLevels,
+            };
+        }
 
         /// <summary>非有限值 → null（合法 JSON）；有限值 → 不变文化字符串。</summary>
         private static string? Fmt(double value)
