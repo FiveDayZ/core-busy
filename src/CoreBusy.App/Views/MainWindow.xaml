@@ -188,8 +188,12 @@
                                                 <DataTemplate>
                                                     <!--  点击弹出的卡片承载该核全部深度信息
                                                           （健康度三分量/等级/角色/EXP）——
-                                                          主界面保持 8 卡均等的简约布局（v1.23.0 反堆砌）。  -->
+                                                          主界面保持 8 卡均等的简约布局（v1.23.0 反堆砌）。
+                                                          MaxWidth + 左对齐（v1.35.3）：UniformGrid 单元
+                                                          宽 = 分区宽 / 列数，宽窗/最大化时少核段会被
+                                                          单元拉伸；此处封顶卡片宽度（窄窗仍可自由收缩）。  -->
                                                     <Border Background="Transparent" Cursor="Hand"
+                                                            MaxWidth="250" HorizontalAlignment="Left"
                                                             Tag="{Binding Id}"
                                                             MouseLeftButtonUp="OnCoreTileClick"
                                                             AutomationProperties.Name="{Binding Id}"

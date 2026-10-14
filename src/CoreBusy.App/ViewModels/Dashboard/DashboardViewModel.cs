@@ -996,16 +996,32 @@ public sealed class DashboardViewModel : ObservableObject
     {
         var dense = groups.Count >= 3;
         var index = 0;
+        var groupOrdinal = 0;
+
+        // 布局列数全局统一（取各段自然列数的最大值，且 ≥4 基准）：
+        // UniformGrid 的单元宽 = 分区宽 / 列数，若列数按各段自己的核数算，
+        // 少核段（如混合架构的 1 颗 P 核）会独占整行被拉长（U300 实测）。
+        // 统一后少核段与其余段卡宽一致，只占基准网格中的前几格。
+        var naturalColumns = new int[groups.Count];
+        var layoutColumns = 4;
+        for (var g = 0; g < groups.Count; g++)
+        {
+            var groupCount = groups[g].CoreIds.Count;
+
+            // 列数上限 4：窄窗（900px）下 8 颗仍能保持 ≥130px 的卡宽，超出后折行。
+            naturalColumns[g] = groupCount <= 4 ? Math.Max(1, groupCount)
+                : groupCount <= 8 ? 4
+                : groupCount <= 12 ? 6
+                : 8;
+
+            if (naturalColumns[g] > layoutColumns)
+                layoutColumns = naturalColumns[g];
+        }
 
         foreach (var group in groups)
         {
             var count = group.CoreIds.Count;
-
-            // 列数上限 4：窄窗（900px）下 8 颗仍能保持 ≥130px 的卡宽，超出后折行。
-            var columns = count <= 4 ? Math.Max(1, count)
-                : count <= 8 ? 4
-                : count <= 12 ? 6
-                : 8;
+            var columns = naturalColumns[groupOrdinal];
 
             var compact = dense || group.Kind == CoreGroupKind.Efficiency || columns >= 6;
             var cores = new List<DashboardCoreVm>(count);
@@ -1024,7 +1040,8 @@ public sealed class DashboardViewModel : ObservableObject
             }
 
             // 负载口径开关是全局唯一的，只挂到第一段分区（CoreGroupVm 内部据此决定可见性）。
-            CoreGroups.Add(new CoreGroupVm(group, compact, columns, cores, isFirstGroup: CoreGroups.Count == 0));
+            CoreGroups.Add(new CoreGroupVm(group, compact, layoutColumns, cores, isFirstGroup: CoreGroups.Count == 0));
+            groupOrdinal++;
         }
     }
 
