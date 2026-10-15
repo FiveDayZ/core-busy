@@ -125,7 +125,7 @@ public static class CoreExpStore
                 if (entry is null)
                     continue;
 
-                result[pair.Name] = entry.ToEntry();
+                result[pair.Name] = RepairEntry(entry.ToEntry());
             }
 
             return (result, caliber);
@@ -137,14 +137,39 @@ public static class CoreExpStore
     }
 
     /// <summary>落盘（带口径标识）。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>写前盘账本合并（v1.36.0，等级回退 BUG 修复）。</b>程序此前没有单实例守卫，
+    /// 旧实例滞留托盘时再启动一个新实例（如提权重启），两者各自持有独立账本、
+    /// 整份互相覆盖 —— 后写者胜，先跑实例攒下的 EXP 被旧快照清掉。
+    /// 本机 <c>core-exp.json</c> 实证：<c>totalLevels=8</c>（曾达 Lv.8，只升不降的高水位）
+    /// 而 EXP 只够 Lv.5，即 EXP 曾从 ≥126.7 核·分回退到 65.9。
+    /// 修复后写盘前先把盘上现有账本读回、逐核逐字段取有效最大值：
+    /// 无论多少个实例并发写，账本都只会单调抬升，后写者不再能带着旧快照开倒车。
+    /// </para>
+    /// </remarks>
     public static void Save(IReadOnlyDictionary<string, CoreExpEntry> cores)
     {
         try
         {
             Directory.CreateDirectory(EnergyHistoryStore.DataDirectory);
 
-            var serializable = new Dictionary<string, CoreExpRecord>(cores.Count, StringComparer.Ordinal);
+            // 合并的宿主是调用方账本本身的副本语义：MergeInto 只会把字段抬到
+            // 「内存值与盘值的较大者」，正常运行时盘值 ≤ 内存值，等于零改动。
+            var merged = new Dictionary<string, CoreExpEntry>(cores.Count, StringComparer.Ordinal);
             foreach (var pair in cores)
+                merged[pair.Key] = pair.Value;
+
+            foreach (var pair in TryLoadForMerge())
+            {
+                if (merged.TryGetValue(pair.Key, out var mine))
+                    MergeInto(mine, pair.Value);
+                else
+                    merged[pair.Key] = pair.Value;
+            }
+
+            var serializable = new Dictionary<string, CoreExpRecord>(merged.Count, StringComparer.Ordinal);
+            foreach (var pair in merged)
                 serializable[pair.Key] = CoreExpRecord.FromEntry(pair.Value);
 
             // Caliber 声明在最前：人工翻这个文件时，第一眼就能看出这些数字是哪个口径的量。
@@ -162,6 +187,109 @@ public static class CoreExpStore
             // 若不是取证脚本逐环节复现，这个 bug 会被带进发布版。
             CoreExpStoreTrace.LastSaveError = $"{ex.GetType().Name}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// 读回盘上现有账本供 <see cref="Save"/> 合并。<b>无副作用</b>：不归档、不改文件、
+    /// 不抛异常 —— 合并是纯增益，任何解析失败都按空账本处理，绝不能反过来阻塞保存。
+    /// </summary>
+    /// <remarks>
+    /// 口径不符时返回空：口径切换的「归档 + 重新开始」语义由 <see cref="Load"/> 侧负责，
+    /// 这里不抢 —— 否则写盘路径会把旧口径文件静默顶掉、绕过归档。
+    /// </remarks>
+    private static Dictionary<string, CoreExpEntry> TryLoadForMerge()
+    {
+        var result = new Dictionary<string, CoreExpEntry>(StringComparer.Ordinal);
+        try
+        {
+            if (!File.Exists(FilePath))
+                return result;
+
+            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return result;
+
+            var caliber = root.TryGetProperty("caliber", out var caliberElement)
+                ? caliberElement.GetString() ?? string.Empty
+                : string.Empty;
+            if (!string.Equals(caliber, CoreExpCaliber.CaliberId, StringComparison.Ordinal))
+                return result;
+
+            if (!root.TryGetProperty("cores", out var cores) || cores.ValueKind != JsonValueKind.Object)
+                return result;
+
+            foreach (var pair in cores.EnumerateObject())
+            {
+                var entry = pair.Value.Deserialize<CoreExpRecord>();
+                if (entry is null)
+                    continue;
+
+                result[pair.Name] = RepairEntry(entry.ToEntry());
+            }
+
+            return result;
+        }
+        catch (Exception)
+        {
+            return new Dictionary<string, CoreExpEntry>(StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>把盘上条目并入内存条目：读数类字段逐项取有效最大值（账本因此只升不降）。</summary>
+    private static void MergeInto(CoreExpEntry mine, CoreExpEntry disk)
+    {
+        mine.LoadCoreMinutes = MaxNat(mine.LoadCoreMinutes, disk.LoadCoreMinutes);
+        mine.FloorCoreMinutes = MaxNat(mine.FloorCoreMinutes, disk.FloorCoreMinutes);
+        mine.PeakPercent = MaxNat(mine.PeakPercent, disk.PeakPercent);
+        mine.PeakSeconds = MaxNat(mine.PeakSeconds, disk.PeakSeconds);
+
+        var mergedMaxGhz = MaxNat(mine.MaxGhz, disk.MaxGhz);
+        // 峰值时刻跟随更大的 MaxGhz —— 峰值是谁创的，时刻就该是谁的。
+        if (double.IsFinite(mergedMaxGhz) && (double.IsNaN(mine.MaxGhz) || mergedMaxGhz > mine.MaxGhz))
+            mine.PeakAt = disk.PeakAt;
+        mine.MaxGhz = mergedMaxGhz;
+
+        if (mine.TotalLevels < disk.TotalLevels)
+            mine.TotalLevels = disk.TotalLevels;
+    }
+
+    /// <summary>
+    /// NaN 安全的取大：NaN = 「没有证据」，不参与比较。
+    /// <see cref="Math.Max(double, double)"/> 在 .NET 里遇到 NaN 返回 NaN，
+    /// 直接用会让一个缺失字段把真实读数吞掉。
+    /// </summary>
+    private static double MaxNat(double a, double b)
+    {
+        if (double.IsNaN(a))
+            return double.IsNaN(b) ? double.NaN : b;
+        if (double.IsNaN(b))
+            return a;
+        return Math.Max(a, b);
+    }
+
+    /// <summary>
+    /// 等级下界修复（v1.36.0）：EXP 低于 <see cref="CoreExpEntry.TotalLevels"/>
+    /// （曾抵达等级，只升不降的高水位）所对应的本级门槛时，说明账本曾被旧实例覆盖回退 ——
+    /// 按已确证的下界恢复到该级门槛。
+    /// </summary>
+    /// <remarks>
+    /// <b>只恢复到门槛，绝不虚增。</b>TotalLevels 是落盘的等级高水位，属已确证证据；
+    /// 但它在当级内的真实进度无从考证，取本级门槛是保守下界（LevelOf 只会 ≥ TotalLevels，
+    /// 因此修复幂等，不会在每次启动时反复加码）。等级曲线自 v1.22.0 引入后从未重新标定
+    /// （git 取证：CoreLevelCurve.cs 仅一个提交），「曾达 Lv.8」在新旧曲线下语义一致，
+    /// 不存在跨口径误修复。
+    /// </remarks>
+    private static CoreExpEntry RepairEntry(CoreExpEntry entry)
+    {
+        if (entry.TotalLevels > entry.Level)
+        {
+            var threshold = CoreLevelCurve.CumulativeExp(entry.TotalLevels);
+            if (double.IsFinite(threshold) && threshold > entry.LoadCoreMinutes)
+                entry.LoadCoreMinutes = threshold;
+        }
+
+        return entry;
     }
 
     /// <summary>

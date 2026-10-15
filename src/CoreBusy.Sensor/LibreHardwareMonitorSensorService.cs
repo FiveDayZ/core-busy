@@ -932,6 +932,20 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         private DateTime _lastUtc = DateTime.UtcNow;
         private int _zeroStreak;
         private bool _broken;
+        private int _cooldownFrames;
+
+        /// <summary>
+        /// 断路冷却的帧数（≈2 分钟 @1Hz 采样）。冷却期满自动复位重试。
+        /// </summary>
+        /// <remarks>
+        /// v1.36.0 前「断路」是终身的：一次 MSR 读取失败或连续两次 Δ=0 就永久禁用，
+        /// 睡眠唤醒等瞬时故障会被固化成本次会话功耗读数永久丢失，用户只能重启应用
+        /// （实测 BUG：「管理员启动能读功耗，过一段时间又读不到了」）。
+        /// 改为按帧数冷却：故障期不出数（UI 维持 "-"），期满重建基线再试；
+        /// 驱动真坏了也只是每 2 分钟多一次失败的 MSR 调用，代价可忽略。
+        /// 用帧数而非墙钟计时：确定性、可反射模拟验证，且帧循环节拍就是采样的天然时钟。
+        /// </remarks>
+        private const int BrokenCooldownFrames = 120;
 
         private MsrPackagePowerReader(object module, MethodInfo readMsr, double joulesPerCount)
         {
@@ -980,16 +994,24 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
 
         /// <summary>
         /// 差分求功率（W）。首帧建立基线返回 null；计数器不动（Δ=0）说明寄存器不可信，
-        /// 连续两次即断路（真实 CPU 即使深怠每秒也有上万 count 的增量）。
+        /// 连续两次即进入断路冷却（真实 CPU 即使深怠每秒也有上万 count 的增量），
+        /// 冷却期满自动重建基线重试 —— 瞬时故障（如睡眠唤醒）只损失约 2 分钟读数，
+        /// 不再固化成整个会话的永久丢失。
         /// </summary>
         public double? ReadPower()
         {
             if (_broken)
-                return null;
+            {
+                if (--_cooldownFrames > 0)
+                    return null;
+                _broken = false;
+                _zeroStreak = 0;
+                _primed = false;
+            }
 
             if (!TryReadMsr(_module, _readMsr, 0x611, out var value))
             {
-                _broken = true;
+                EnterBroken();
                 return null;
             }
 
@@ -1016,7 +1038,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             if (delta == 0)
             {
                 if (++_zeroStreak >= 2)
-                    _broken = true;
+                    EnterBroken();
                 return null;
             }
 
@@ -1025,6 +1047,13 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
 
             // 合理域与功耗模型同源（MaxCpuWatt=1000 量级）：越界值不采信也不断路，等下一帧。
             return double.IsFinite(watt) && watt > 0 && watt <= 1000.0 ? watt : null;
+        }
+
+        /// <summary>进入断路冷却：冷却期内不出数，期满自动复位重试（见 <see cref="BrokenCooldownFrames"/>）。</summary>
+        private void EnterBroken()
+        {
+            _broken = true;
+            _cooldownFrames = BrokenCooldownFrames;
         }
 
         public void Dispose()

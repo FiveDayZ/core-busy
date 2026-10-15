@@ -1,5 +1,6 @@
 ﻿namespace CoreBusy.App;
 
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -27,6 +28,19 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+
+        // 单实例守卫（v1.36.0）：关闭键是「隐藏到托盘」，旧实例滞留不可见；此时再启动
+        // 新实例（如提权重启），两个进程各自持有独立账本、整份互相覆盖 core-exp.json ——
+        // 这正是"退出重进等级回退"的根因（取证：本机账本 totalLevels=8 而 EXP 只够 Lv.5）。
+        // 第二个实例只做一件事：把现有实例的窗口带回前台，然后退出。
+        // 取证/隔离实例（COREBUSY_DATA_DIR）不参与互斥：数据目录独立、与常规实例无账本
+        // 竞争，且截图取证工作流依赖「能与用户实例并存地自起隔离实例」。
+        var dataDirOverride = Environment.GetEnvironmentVariable(EnergyHistoryStore.DataDirEnvVar);
+        if (string.IsNullOrWhiteSpace(dataDirOverride) && !AcquireSingleInstance())
+        {
+            Shutdown();
+            return;
+        }
 
         // 渲染模式（v1.19.0）：默认软件渲染（实测比硬件加速更省内存且无 CPU 代价，
         // 同时规避远程/沙箱会话的黑屏问题）。详见 ApplyRenderMode 的注释与实测表。
@@ -97,6 +111,81 @@ public partial class App : Application
             Application.Current.Shutdown();
         }
     }
+
+    // ── 单实例守卫（v1.36.0）────────────────────────────────────────
+
+    /// <summary>单实例互斥体。持有到进程退出；释放由系统在进程终止时兜底。</summary>
+    private static Mutex? _singleInstance;
+
+    /// <summary>互斥体名。Local 域：同一登录会话内唯一（取证隔离实例已按数据目录豁免）。</summary>
+    private const string SingleInstanceMutexName = @"Local\CORE-BUSY.SingleInstance";
+
+    private const int SwShow = 5;
+
+    /// <summary>尝试成为唯一实例。已有实例在运行时把它带回前台并返回 false（调用方应退出）。</summary>
+    private static bool AcquireSingleInstance()
+    {
+        var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+        if (createdNew)
+        {
+            _singleInstance = mutex;
+            return true;
+        }
+
+        mutex.Dispose();
+        ActivateExistingInstance();
+        return false;
+    }
+
+    /// <summary>把已运行实例的主窗口带回前台（SW_SHOW 对托盘隐藏的窗口等效于 Show()）。</summary>
+    private static void ActivateExistingInstance()
+    {
+        Process? other = null;
+        var currentPid = Environment.ProcessId;
+        foreach (var candidate in Process.GetProcessesByName("CoreBusy.App"))
+        {
+            if (candidate.Id != currentPid && other is null)
+                other = candidate;
+            else
+                candidate.Dispose();
+        }
+
+        if (other is not null)
+        {
+            using (other)
+            {
+                var handle = other.MainWindowHandle;
+                if (handle != IntPtr.Zero)
+                {
+                    ShowWindow(handle, SwShow);
+                    SetForegroundWindow(handle);
+                }
+            }
+        }
+
+        // 提权启动却撞上已有实例：把「功耗为什么没有」一次讲清，避免用户对着
+        // 未提权旧窗口反复困惑（BUG 2 的日常体验正是这两种状态的混淆）。
+        if (IsElevated())
+        {
+            MessageBox.Show(
+                "CORE-BUSY 已有一个实例在运行（已尝试将其窗口带到前台）。\n\n" +
+                "若功耗/温度等读数显示 \"-\"，说明现有实例未以管理员身份运行：" +
+                "请先退出托盘中的现有实例（托盘图标右键 → 退出），再以管理员身份重新启动。",
+                "CORE-BUSY 已在运行",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+    }
+
+    private static bool IsElevated()
+        => new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent())
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     /// <summary>
     /// 渲染模式决策（v1.19.0）。
