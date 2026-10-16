@@ -25,6 +25,8 @@ internal static partial class Program
             _path = path ?? Path.Combine(AppContext.BaseDirectory, "cb-opt-" + Guid.NewGuid().ToString("N") + ".exe");
             if (!File.Exists(_path)) File.Copy(Environment.ProcessPath!, _path);
             Process = Process.Start(new ProcessStartInfo(_path, "--optimization-worker") { UseShellExecute = false, CreateNoWindow = true })!;
+            // Windows 可从低优先级宿主继承初值；显式建立本组恢复断言的标准基线。
+            Process.PriorityClass = ProcessPriorityClass.Normal;
         }
         public OptimizationWorker SameName() => new(_path);
         public void Dispose()
