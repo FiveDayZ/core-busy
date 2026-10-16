@@ -180,6 +180,11 @@ internal static partial class Program
         File.Delete(marker);
         using (var previous = StartSelf("--hold", "500"))
             Check(Run(install, previous.Id.ToString()) == 0 && previous.HasExited, "updater waits for original process before replacement and restart");
+        using (var previous = StartSelf("--hold", "0"))
+        {
+            Check(previous.WaitForExit(10000), "original update process has already exited");
+            Check(Run(install, previous.Id.ToString()) == 0, "updater accepts an original process that exited before its wait starts");
+        }
         using (File.Open(exe, FileMode.Open, FileAccess.Read, FileShare.Read))
             Check(Run(install) == 1 && File.Exists(exe), "permanent sharing violation reaches bounded retry limit without deleting old EXE");
         File.Delete(marker);

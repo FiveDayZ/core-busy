@@ -389,7 +389,7 @@ if not exist "%EXE%" goto failed
 if not exist "%STAGED%\CoreBusy.App.exe" goto failed
 rem Wait for the original process to release both its files and the single-instance mutex.
 if "%~3"=="" goto waitlock
-powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$p=Get-Process -Id %~3 -ErrorAction SilentlyContinue; if ($p -and -not $p.WaitForExit(__WAIT_MS__)) { exit 1 }"
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$p=Get-Process -Id %~3 -ErrorAction SilentlyContinue; if ($p -and -not $p.WaitForExit(__WAIT_MS__)) { exit 1 }; exit 0"
 if errorlevel 1 goto failed
 :waitlock
 set /a ATTEMPTS+=1
