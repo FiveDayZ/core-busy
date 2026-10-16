@@ -13,7 +13,6 @@ public sealed class DashboardCoreVm : ObservableObject
 {
     private double _usage;
     private string _usageText = "0%";
-    private string _freqText = "-";
     private string _statusLabel = "空闲";
     private string _statusEmoji = "💤";
     private Brush _usageBrush = UsagePalette.UsageBrush(0);
@@ -29,20 +28,18 @@ public sealed class DashboardCoreVm : ObservableObject
     private Brush _healthBrush = CoreHealthPalette.Foreground(CoreHealthGrade.Unknown);
     private Brush _healthDimBrush = CoreHealthPalette.Background(CoreHealthGrade.Unknown);
 
-    public DashboardCoreVm(string id, bool isCompact, IReadOnlyList<CpuThreadSnapshot>? threads = null)
+    public DashboardCoreVm(string id, bool isCompact, IReadOnlyList<CpuThreadSnapshot>? threads = null, CpuVendor vendor = CpuVendor.Unknown)
     {
         Id = id;
         IsCompact = isCompact;
+        Level = new CoreLevelVm(vendor);
 
-        // 阶段变色（v1.27.2）：等级跨过阶段阈值时，封装边框随成长阶段逐级点亮
-        // （高负载红框优先级更高，见 ApplyBorder）。
-        // 戳一戳（v1.28.0）：同一信号驱动小核灵进化换形象。
+        // 阶段保持独立外观；负载告警由状态色条与文字承担。
         Level.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(CoreLevelVm.Level))
+            if (e.PropertyName == nameof(CoreLevelVm.StageIndex))
             {
                 ApplyBorder();
-                Poke.OnLevelChanged(Level.Level, Level.IsMaxLevel);
             }
         };
 
@@ -70,19 +67,13 @@ public sealed class DashboardCoreVm : ObservableObject
     /// 两者语义又完全无关（等级= 陪你跑了多久，健康度 = 硬件状态），
     /// 挤在一起会让人以为「等级低 = 机器坏了」。故等级走 Tile 底部独立一行。
     /// </summary>
-    public CoreLevelVm Level { get; } = new();
+    public CoreLevelVm Level { get; }
 
     /// <summary>
     /// 行为角色（v1.22.0）。与 <see cref="Level"/> 并列而非替代：等级是「跑了多久」，
     /// 角色是「怎么跑的」。二者共同构成"挂机"的可读性。
     /// </summary>
     public CoreRoleVm Role { get; } = new();
-
-    /// <summary>
-    /// 弹卡戳一戳小核灵（v1.28.0）。纯会话级趣味：不落盘、不进 EXP 口径，
-    /// 台词按当前状态即兴生成 —— 见 <see cref="CorePokeVm"/>。
-    /// </summary>
-    public CorePokeVm Poke { get; } = new();
 
     /// <summary>是否使用紧凑卡片布局（E-Core，或分段较多时整体收一档）。</summary>
     public bool IsCompact { get; }
@@ -127,12 +118,55 @@ public sealed class DashboardCoreVm : ObservableObject
         private set => SetProperty(ref _usageTextBrush, value);
     }
 
-    /// <summary>频率文本（如 "5.20 GHz"）。</summary>
-    public string FreqText
+    /// <summary>卡片与详情始终共用当前频率，切换累积负载不改变频率口径。</summary>
+    public string FreqText => LiveFrequencyText;
+
+    private string _loadTipText = "实时负载";
+    public string LoadTipText { get => _loadTipText; private set => SetProperty(ref _loadTipText, value); }
+
+    private double _liveUsage;
+    private string _liveUsageText = "-", _liveFrequencyText = "-", _effectiveFrequencyText = "-", _voltageText = "-";
+    private string _frequencySourceText = "来源不可用", _topologyText = "-";
+    public double LiveUsage { get => _liveUsage; private set => SetProperty(ref _liveUsage, value); }
+    public string LiveUsageText { get => _liveUsageText; private set => SetProperty(ref _liveUsageText, value); }
+    public string LiveFrequencyText
     {
-        get => _freqText;
-        private set => SetProperty(ref _freqText, value);
+        get => _liveFrequencyText;
+        private set
+        {
+            if (SetProperty(ref _liveFrequencyText, value)) OnPropertyChanged(nameof(FreqText));
+        }
     }
+    public string EffectiveFrequencyText { get => _effectiveFrequencyText; private set => SetProperty(ref _effectiveFrequencyText, value); }
+    public string VoltageText { get => _voltageText; private set => SetProperty(ref _voltageText, value); }
+    public string FrequencySourceText { get => _frequencySourceText; private set => SetProperty(ref _frequencySourceText, value); }
+    public string TopologyText { get => _topologyText; private set => SetProperty(ref _topologyText, value); }
+
+    // 详情始终展示当前采样，避免主界面切到累积排名后，把累计工作量误标为 GHz。
+    private void ApplyTelemetry(CpuCoreSnapshot snapshot)
+    {
+        var valid = double.IsFinite(snapshot.UsagePercent) && snapshot.UsagePercent >= 0 && snapshot.UsagePercent <= 100;
+        LiveUsage = valid ? snapshot.UsagePercent : 0;
+        LiveUsageText = valid ? $"{snapshot.UsagePercent:0}%" : "-";
+        LiveFrequencyText = FormatFrequency(snapshot.FrequencyGHz);
+        EffectiveFrequencyText = FormatFrequency(snapshot.EffectiveFrequencyGHz);
+        VoltageText = double.IsFinite(snapshot.CoreVoltageV) && snapshot.CoreVoltageV is >= .3 and <= 2
+            ? $"{snapshot.CoreVoltageV:0.000} V" : "-";
+        FrequencySourceText = snapshot.FrequencySource switch
+        {
+            CoreFrequencySource.SensorPState => "传感器时钟",
+            CoreFrequencySource.SensorEffective => "传感器有效频率",
+            CoreFrequencySource.PerfCounterRatio => "性能计数器估算",
+            CoreFrequencySource.BaseClock => "基频回退值",
+            _ => "来源不可用",
+        };
+        var kind = snapshot.Class switch { CoreClass.Performance => "性能核", CoreClass.Efficiency => "能效核", _ => "标准核" };
+        var threads = snapshot.Threads.Count > 0 ? $" · {snapshot.Threads.Count} 线程" : string.Empty;
+        TopologyText = kind + threads + (snapshot.CcdIndex is { } ccd ? $" · CCD {ccd}" : string.Empty);
+    }
+
+    private static string FormatFrequency(double ghz)
+        => double.IsFinite(ghz) && ghz > 0 ? $"{ghz:0.00} GHz" : "-";
 
     /// <summary>
     /// 历史最高有效频率（v1.29.0）。数据源是 EXP 账本 <c>CoreExpEntry.MaxGhz</c>（跨进程留档），
@@ -197,7 +231,7 @@ public sealed class DashboardCoreVm : ObservableObject
         private set => SetProperty(ref _statusDimBrush, value);
     }
 
-    /// <summary>Tile 边框颜色（高负载时红色强调）。</summary>
+    /// <summary>成长阶段边框颜色，与负载警示条分离。</summary>
     public Brush TileBorderBrush
     {
         get => _tileBorderBrush;
@@ -270,16 +304,16 @@ public sealed class DashboardCoreVm : ObservableObject
     /// </summary>
     public void ApplyLive(CpuCoreSnapshot snapshot)
     {
-        var usage = snapshot.UsagePercent;
+        ApplyTelemetry(snapshot);
+        var valid = double.IsFinite(snapshot.UsagePercent) && snapshot.UsagePercent is >= 0 and <= 100;
+        var usage = valid ? snapshot.UsagePercent : 0;
 
         Usage = usage;
-        UsageText = $"{usage:0}%";
-        FreqText = double.IsNaN(snapshot.FrequencyGHz) || snapshot.FrequencyGHz <= 0
-            ? "-"
-            : $"{snapshot.FrequencyGHz:0.00} GHz";
+        UsageText = valid ? $"{usage:0}%" : "-";
+        LoadTipText = "实时负载";
         UsageBrush = UsagePalette.UsageBrush(usage);
         UsageTextBrush = UsagePalette.UsageTextBrush(usage);
-        StatusLabel = UsagePalette.StatusLabel(snapshot.Status);
+        StatusLabel = valid ? UsagePalette.StatusLabel(snapshot.Status) : "未采样";
         StatusEmoji = UsagePalette.StatusEmoji(snapshot.Status);
         StatusBrush = UsagePalette.StatusBrush(snapshot.Status);
         StatusDimBrush = UsagePalette.StatusDimBrush(snapshot.Status);
@@ -295,7 +329,7 @@ public sealed class DashboardCoreVm : ObservableObject
     /// 应用**累积**视图。同一张卡片复用实时视图的槽位，只换口径，不新增行：
     /// <list type="bullet">
     ///   <item>大号数值 / 进度条 / 左侧色条 → 累积均值（0-100，与实时同一套色阶）。</item>
-    ///   <item>频率槽位 → 等效满负荷量（核·秒/核·分/核·时），给出"累计了多少"的绝对量感。</item>
+    ///   <item>负载提示 → 累计等效满负荷量；频率仍显示与详情一致的当前 GHz。</item>
     ///   <item>状态槽位 → 名次（#n / 总数），即用户要的"高低排名"，颜色随累积均值。</item>
     /// </list>
     /// 这样累积视图不需要任何新的视觉元素，切换时卡片结构完全稳定、不闪动。
@@ -303,23 +337,28 @@ public sealed class DashboardCoreVm : ObservableObject
     public void ApplyCumulative(
         CpuCoreSnapshot snapshot, CumulativeLoadTracker tracker, int rank, int rankTotal)
     {
+        ApplyTelemetry(snapshot);
         var average = tracker.AveragePercent(snapshot.Id);
 
+        var valid = tracker.ValidSeconds(snapshot.Id) > 0;
         Usage = average;
-        UsageText = $"{average:0}%";
-        FreqText = CumulativeLoadTracker.FormatBusy(tracker.BusySeconds(snapshot.Id));
+        UsageText = valid ? $"{average:0}%" : "-";
+        LoadTipText = valid
+            ? $"累积平均负载 · 等效满负荷量 {CumulativeLoadTracker.FormatBusy(tracker.BusySeconds(snapshot.Id))}"
+            : "累积负载：尚无有效采样";
         UsageBrush = UsagePalette.UsageBrush(average);
         UsageTextBrush = UsagePalette.UsageTextBrush(average);
         // 左侧色条跟随累积均值，与卡片自身的进度条同源，避免"边缘条说实时、中间条说累积"。
         StatusBrush = UsagePalette.UsageBrush(average);
         StatusDimBrush = UsagePalette.UsageDimBrush(average);
-        StatusLabel = $"#{rank} / {rankTotal}";
+        StatusLabel = valid ? $"#{rank} / {rankTotal}" : "未采样";
         StatusEmoji = "#";
 
         ApplyEmphasis(average);
 
         for (var i = 0; i < Threads.Count && i < snapshot.Threads.Count; i++)
-            Threads[i].ApplyCumulative(tracker.AveragePercent(snapshot.Threads[i].Id));
+            Threads[i].ApplyCumulative(tracker.ValidSeconds(snapshot.Threads[i].Id) > 0
+                ? tracker.AveragePercent(snapshot.Threads[i].Id) : double.NaN);
     }
 
     /// <summary>高负载红色强调（实时与累积共用同一阈值口径）。</summary>
@@ -335,11 +374,8 @@ public sealed class DashboardCoreVm : ObservableObject
     }
 
     /// <summary>
-    /// 封装边框（v1.27.2）：高负载红框**最高优先**（告警语义不能被成长装饰淹没）；
-    /// 其余时候按成长阶段逐级点亮 —— 让"养到哪个阶段"在主板上一眼可辨。
+    /// 成长边框独立于负载，告警保留在状态色条、负载读数与轻微底色中。
     /// </summary>
     private void ApplyBorder()
-        => TileBorderBrush = IsHighLoad
-            ? UiTheme.TileDangerBorderBrush
-            : UiTheme.StageBorderFor(Level.Level);
+        => TileBorderBrush = UiTheme.StageBorderFor(Level.Level);
 }

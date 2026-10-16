@@ -81,7 +81,7 @@ public sealed class CumulativeEnergyTracker
         // 功耗 0 W **不是有效读数**（v1.16.1）：AMD 在拿不到内核驱动时把 SMU 读数填 0，
         // 旧口径放它过去，等于把"读不到"当成"耗电为 0"积分进去 —— 结果是覆盖率虚高、
         // 平均功率被稀释、当日账本记下一格假的"几乎不耗电"。通电运行的 CPU 必然有功耗。
-        var valid = deltaSeconds > 0
+        var valid = double.IsFinite(deltaSeconds) && deltaSeconds > 0
             && double.IsFinite(powerWatt)
             && powerWatt > 0
             && powerWatt <= _maxPlausibleWatt;

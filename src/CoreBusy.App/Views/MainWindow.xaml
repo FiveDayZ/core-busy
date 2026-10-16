@@ -4,8 +4,8 @@
         xmlns:controls="clr-namespace:CoreBusy.App.Controls"
         Title="CORE-BUSY 核忙 - CPU Core Activity Monitor"
         Icon="pack://application:,,,/Assets/CoreBusy.ico"
-        Width="680" Height="500"
-        MinWidth="640" MinHeight="440"
+        Width="720" Height="500"
+        MinWidth="640" MinHeight="460"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" ResizeMode="CanResize"
         Background="{StaticResource CoreBusyBackgroundBrush}"
@@ -28,7 +28,7 @@
 
 
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="44"
+        <WindowChrome CaptionHeight="34"
                       ResizeBorderThickness="6"
                       GlassFrameThickness="0"
                       CornerRadius="0"
@@ -37,9 +37,9 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="44" />
+            <RowDefinition Height="34" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="28" />
+            <RowDefinition Height="22" />
         </Grid.RowDefinitions>
 
         <!--  ==================== 0. 标题栏（同时承担 CPU 身份条）  ====================  -->
@@ -49,12 +49,12 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
+            <DockPanel Grid.Column="0" VerticalAlignment="Center"
                         Margin="12,0,0,0">
                 <!--  v1.26.4：品牌角标 = 新图标的「Die 2×2 负载格」矢量版。
                       颜色走 DynamicResource 品牌画刷 —— 随 intel/amd 主题联动；
                       四格透明度阶梯 = 负载分档语义（与核卡色阶同构）。  -->
-                <Grid Width="22" Height="22" VerticalAlignment="Center">
+                <Grid DockPanel.Dock="Left" Width="22" Height="22" VerticalAlignment="Center">
                     <Border CornerRadius="5" Background="{DynamicResource CoreBusyAccentDimBrush}" />
                     <UniformGrid Columns="2" Rows="2" Margin="4.5">
                         <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" Opacity="0.35" />
@@ -63,18 +63,15 @@
                         <Border CornerRadius="1.5" Margin="1" Background="{DynamicResource CoreBusyAccentBrush}" />
                     </UniformGrid>
                 </Grid>
-                <TextBlock Text="CORE-BUSY" FontSize="13" FontWeight="SemiBold"
+                <TextBlock DockPanel.Dock="Left" Text="CORE-BUSY" FontSize="13" FontWeight="SemiBold"
                            Foreground="{StaticResource CoreBusyTextPrimaryBrush}"
                            VerticalAlignment="Center" Margin="8,0,0,0" />
-                <Border Width="1" Height="12" Background="{StaticResource CoreBusyBorderWeakBrush}"
+                <Border DockPanel.Dock="Left" Width="1" Height="12" Background="{StaticResource CoreBusyBorderWeakBrush}"
                         Margin="10,0" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding CpuName}" FontSize="12"
+                <TextBlock Text="{Binding CpuName}" ToolTip="{Binding CpuSpecs}" FontSize="12"
                            Foreground="{StaticResource CoreBusyTextSecondaryBrush}"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                <TextBlock Text="{Binding CpuSpecs}" FontSize="11" Margin="8,0,0,0"
-                           Foreground="{StaticResource CoreBusyTextWeakBrush}"
-                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            </StackPanel>
+            </DockPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
                         Margin="0,0,6,0"
@@ -125,28 +122,36 @@
             </StackPanel>
         </Grid>
 
-        <!--  ==================== 1. 主内容区：PCB 主板（v1.26.0）====================
-              背景是静态绘制的 PCB 板（走线/焊盘/安装孔/丝印），
-              每颗核心是板上的一颗芯片（见 CpuCoreTile 芯片封装造型）。  -->
-        <controls:PcbBoardControl Grid.Row="1" />
-        <Grid Grid.Row="1" Margin="10,10,10,8">
-            <!--  核心角色卡分区（v1.25.0：养成游戏形态，热力图已随方向调整移除）  -->
-            <Grid>
-                <!--  1.1 核心分区（动态生成：Intel 混合 → P/E；AMD → CPU Core / CCD n）。
-                      芯片直接坐在 PCB 上：仅一层轻微压暗圈出插座区，不再用面板卡片。  -->
-                <ScrollViewer VerticalScrollBarVisibility="Auto"
+        <!-- 静态主板作为空间底座；走线留在分区外，内容使用不透明插座面板。 -->
+        <controls:PcbBoardControl Grid.Row="1" Margin="8,6" />
+        <Grid Grid.Row="1" Margin="20,7,20,18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid Margin="0,0,0,5">
+                <StackPanel>
+                    <TextBlock Text="核心主板" ToolTip="{Binding SnapshotStatusText}" FontSize="13" Margin="12,0,0,0" FontWeight="SemiBold"
+                               Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
+                </StackPanel>
+                <TextBlock Text="{Binding BoardHintText}" ToolTip="{Binding SnapshotStatusText}" TextTrimming="CharacterEllipsis" MaxWidth="400" FontSize="11" HorizontalAlignment="Right"
+                           VerticalAlignment="Bottom" Margin="12,0,16,2"
+                           Foreground="{StaticResource CoreBusyTextSecondaryBrush}" />
+            </Grid>
+            <Grid Grid.Row="1">
+                <ScrollViewer Style="{StaticResource CompactScrollViewer}" x:Name="CoreScroll" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <ItemsControl ItemsSource="{Binding CoreGroups}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border Background="#17000000" Padding="10,8,10,9" Margin="0,0,0,8"
-                                        CornerRadius="8">
+                                <Border Background="Transparent" Padding="4" Margin="0,0,0,4"
+                                        BorderBrush="{StaticResource CoreBusyBorderBrush}" BorderThickness="1" CornerRadius="9">
                                     <StackPanel>
                                         <controls:SectionHeader Title="{Binding Title}"
                                                                 Subtitle="{Binding Subtitle}"
                                                                 RightNote="{Binding RightNote}"
                                                                 RightNoteVisibility="{Binding RightNoteVisibility}"
-                                                                AccentBrush="{StaticResource CoreBusyAccentBrush}">
+                                                                AccentBrush="{StaticResource CoreBusyAccentBrush}" Margin="2,0,2,2">
                                             <controls:SectionHeader.RightContent>
                                                 <!--
                                                     负载口径开关（实时 / 累积）。状态是全局唯一的，
@@ -181,25 +186,27 @@
                                         <ItemsControl ItemsSource="{Binding Cores}">
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
-                                                    <UniformGrid Columns="{Binding TileColumns}" />
+                                                    <controls:CoreTilePanel MaxColumns="{Binding TileColumns}"
+                                                                            FitEightCores="{Binding IsSingleScreenBoard, RelativeSource={RelativeSource AncestorType=Window}}" />
                                                 </ItemsPanelTemplate>
                                             </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <!--  点击弹出的卡片承载该核全部深度信息
-                                                          （健康度三分量/等级/角色/EXP）——
-                                                          主界面保持 8 卡均等的简约布局（v1.23.0 反堆砌）。
-                                                          MaxWidth + 左对齐（v1.35.3）：UniformGrid 单元
+                                                          （实时指标/峰值/等级/EXP）——
+                                                          主界面保留 CPU、等级和负载，深度信息进入详情。
+                                                          MaxWidth + 列内拉伸：UniformGrid 单元
                                                           宽 = 分区宽 / 列数，宽窗/最大化时少核段会被
                                                           单元拉伸；此处封顶卡片宽度（窄窗仍可自由收缩）。  -->
                                                     <Border Background="Transparent" Cursor="Hand"
-                                                            MaxWidth="250" HorizontalAlignment="Left"
+                                                            MaxWidth="184" HorizontalAlignment="Stretch"
                                                             Tag="{Binding Id}"
                                                             MouseLeftButtonUp="OnCoreTileClick"
                                                             AutomationProperties.Name="{Binding Id}"
                                                             Focusable="True">
-                                                        <controls:CpuCoreTile Margin="3,2"
-                                                                               IsCompact="{Binding IsCompact}" />
+                                                        <controls:CpuCoreTile Margin="6,4"
+                                                                               IsCompact="{Binding IsCompact}"
+                                                                               IsCondensed="{Binding IsCondensedBoard, RelativeSource={RelativeSource AncestorType=Window}}" />
                                                     </Border>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
@@ -221,114 +228,124 @@
             <controls:StatusBarControl />
         </Border>
     
-    <!--  焦点详情弹出卡片（v1.23.0）：点核卡弹出，点卡片外自动关闭。
-          AllowsTransparency + 双 Border 模拟软阴影（SoftwareOnly 下
-          DropShadowEffect 每帧重渲染是卡顿主因，禁用）。  -->
-    <Popup x:Name="FocusCard"
-           AllowsTransparency="True"
-           StaysOpen="False"
-           Placement="Right"
-           HorizontalOffset="6" VerticalOffset="-8"
+    <!-- 核心详情在窗口内居中，信息优先；不再承载戳击、台词与装饰性互动。 -->
+    <Popup x:Name="FocusCard" AllowsTransparency="True" StaysOpen="False" Placement="Center"
            PopupAnimation="Fade">
-        <Border x:Name="FocusCardRoot" Width="248" Background="{StaticResource CoreBusyPanelBrush}"
-                BorderBrush="{StaticResource CoreBusyAccentBrush}" BorderThickness="1"
-                CornerRadius="8" RenderTransformOrigin="0,0.5">
-            <Border Background="Transparent" BorderThickness="0,1,1,1"
-                    BorderBrush="#22000000" CornerRadius="8">
-                <StackPanel Margin="12,10">
-                    <!--  头部：核心号 + 状态 + 健康度  -->
-                    <Grid>
-                        <TextBlock Text="{Binding Id}" FontSize="16" FontWeight="Bold"
-                                   Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
-                        <TextBlock Text="{Binding StatusLabel}" FontSize="10.5" FontWeight="SemiBold"
-                                   Foreground="{Binding StatusBrush}" HorizontalAlignment="Right"
-                                   VerticalAlignment="Center" />
-                    </Grid>
-                    <!--  使用率大字 + 负载条  -->
-                    <Grid Margin="0,6,0,0">
-                        <TextBlock Text="{Binding UsageText}" FontSize="26" FontWeight="Bold"
-                                   Foreground="{Binding UsageTextBrush}"
-                                   Typography.NumeralAlignment="Tabular" />
-                    </Grid>
-                    <controls:MiniBar Height="5" Margin="0,4,0,0"
-                                      Value="{Binding Usage, Mode=OneWay}"
-                                      FillBrush="{Binding UsageBrush}"
-                                      TrackBrush="{StaticResource CoreBusyTrackBrush}" />
-                    <TextBlock Text="{Binding FreqText}" FontSize="10"
-                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,4,0,0"
-                               Typography.NumeralAlignment="Tabular" />
-                    <TextBlock Text="{Binding PeakFreqText}" FontSize="10"
-                                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,2,0,0"
-                                               Typography.NumeralAlignment="Tabular" />
-                    <TextBlock Text="{Binding PeakDurationText}" FontSize="10"
-                                               Foreground="{StaticResource CoreBusyTextWeakBrush}" Margin="0,2,0,0"
-                                               Typography.NumeralAlignment="Tabular" />
-
-                    <!--  成长主体（v1.27.0）：大号等级 + 平滑生长的 EXP 动画条 + ETA 预估。
-                          文字解释（口径声明/解锁清单）全部撤下：口径细节收进进度条 ToolTip，
-                          升级预告压缩为一行 ETA —— 看一眼就知道"在涨、涨多快、还差多少"。  -->
-                    <Separator Margin="0,8,0,6" Background="{StaticResource CoreBusyTrackBrush}" />
-                    <Grid>
+        <Border x:Name="FocusCardRoot" Width="288" Margin="6"
+                Background="{StaticResource CoreBusyPanelBrush}"
+                BorderBrush="{StaticResource CoreBusyBorderBrush}" BorderThickness="1" CornerRadius="9">
+            <Border.MaxHeight>
+                <Binding Path="Height" Source="{x:Static SystemParameters.WorkArea}" />
+            </Border.MaxHeight>
+            <Border.Resources>
+                <Style x:Key="DetailLabel" TargetType="TextBlock">
+                    <Setter Property="FontSize" Value="10" />
+                    <Setter Property="Foreground" Value="{StaticResource CoreBusyTextWeakBrush}" />
+                </Style>
+                <Style x:Key="DetailValue" TargetType="TextBlock">
+                    <Setter Property="FontSize" Value="13" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Margin" Value="0,3,0,0" />
+                    <Setter Property="Foreground" Value="{StaticResource CoreBusyTextPrimaryBrush}" />
+                </Style>
+            </Border.Resources>
+            <ScrollViewer Style="{StaticResource CompactScrollViewer}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Padding="10" Focusable="False">
+                <StackPanel>
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding Level.LevelText}" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{StaticResource CoreBusyAccentBrush}" HorizontalAlignment="Right" />
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Level.LevelText}" FontSize="28" FontWeight="Bold"
-                                       Foreground="{StaticResource CoreBusyAccentBrush}"
-                                       Typography.NumeralAlignment="Tabular" />
-                            <StackPanel Margin="10,0,0,3" VerticalAlignment="Bottom">
-                                <TextBlock Text="{Binding Level.StageText}" FontSize="11"
-                                           Foreground="{StaticResource CoreBusyTextSecondaryBrush}" />
-                                <TextBlock Text="{Binding Role.Label}" FontSize="10" Margin="0,1,0,0"
-                                           Foreground="{Binding Role.AccentBrush}" />
-                            </StackPanel>
+                            <TextBlock Text="{Binding Id}" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
+                            <TextBlock Text="核心详情" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource CoreBusyTextSecondaryBrush}" />
                         </StackPanel>
-                        <TextBlock Text="{Binding Level.EtaText}" FontSize="10.5" FontWeight="SemiBold"
-                                   Foreground="{StaticResource CoreBusyAccentBrush}"
-                                   HorizontalAlignment="Right" VerticalAlignment="Bottom" />
-                    </Grid>
-
-                    <!--  EXP 动画条：宽度由 code-behind 在每次 Progress 变化时补间（ease-out），
-                          打开弹卡时从 0 生长到当前值 —— 直观呈现"这条就是攒下的经验"。
-                          完整口径说明收进 ToolTip（默认不可见，零视觉噪音）。  -->
-                    <Border x:Name="ExpTrack" Height="9" Margin="0,9,0,0"
-                            Background="{StaticResource CoreBusyTrackBrush}" CornerRadius="4.5"
-                            ToolTip="{Binding Level.TipText}" ToolTipService.ShowDuration="20000">
-                        <Border x:Name="ExpFill" HorizontalAlignment="Left" CornerRadius="4.5" Width="0"
-                                Background="{StaticResource CoreBusyAccentBrush}" />
-                    </Border>
-
-                    <TextBlock Text="{Binding Level.NextUnlockText}" FontSize="9" Margin="0,5,0,0"
-                               Foreground="{StaticResource CoreBusyTextWeakBrush}" />
-
-                    <!--  戳一戳（v1.28.0）：阶段小核灵 + 状态台词气泡。
-                          整行透明 Grid 吃点击（Background=Transparent 才能 hit-test），
-                          点击只播一次弹跳补间 + 换台词 —— 无常驻动画，不落盘。
-                          台词逻辑见 CorePokeQuips / CorePokeVm。  -->
-                    <Grid Margin="0,10,0,0" Background="Transparent" Cursor="Hand"
-                          MouseLeftButtonDown="OnPokeCreatureClick">
+                    </DockPanel>
+                    <TextBlock Text="{Binding TopologyText}" Style="{StaticResource DetailLabel}" Margin="0,3,0,0" />
+                    <Grid Margin="0,7,0,7" ToolTip="{Binding Level.AppearanceText}">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="84" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="PokeFace" Text="{Binding Poke.Face}" FontSize="30"
-                                   VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
-                            <TextBlock.RenderTransform>
-                                <ScaleTransform x:Name="PokeFaceScale" />
-                            </TextBlock.RenderTransform>
-                        </TextBlock>
-                        <Border Grid.Column="1" Margin="8,0,0,0" Padding="8,6" CornerRadius="8"
-                                Background="{StaticResource CoreBusyTrackBrush}"
-                                VerticalAlignment="Center">
-                            <StackPanel>
-                                <TextBlock Text="{Binding Poke.Quip}" FontSize="10.5" TextWrapping="Wrap"
-                                           Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
-                                <TextBlock Text="{Binding Poke.HintText}" FontSize="8.5" Margin="0,2,0,0"
-                                           Foreground="{StaticResource CoreBusyTextWeakBrush}" />
-                            </StackPanel>
-                        </Border>
+                        <controls:CoreEvolutionVisual x:Name="CurrentCorePortrait" Width="76" Height="76"
+                                                      Vendor="{Binding Level.Vendor}" Stage="{Binding Level.StageIndex}"
+                                                      EvolutionVersion="{Binding Level.EvolutionVersion}" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+                            <TextBlock Text="{Binding Level.BrandText}" FontSize="15" FontWeight="SemiBold"
+                                       Foreground="{StaticResource CoreBusyTextPrimaryBrush}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Role.Label}" FontSize="10" Margin="0,5,0,0"
+                                       Foreground="{Binding Role.AccentBrush}" ToolTip="{Binding Role.TipText}" />
+                        </StackPanel>
                     </Grid>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="实时负载" Style="{StaticResource DetailLabel}" />
+                            <TextBlock Text="{Binding LiveUsageText}" Style="{StaticResource DetailValue}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" ToolTip="{Binding FrequencySourceText}">
+                            <TextBlock Text="当前频率" Style="{StaticResource DetailLabel}" />
+                            <TextBlock Text="{Binding LiveFrequencyText}" Style="{StaticResource DetailValue}" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Margin="0,7,0,0" ToolTip="按采样期间驻留时间加权的频率；不等同于瞬时时钟">
+                            <TextBlock Text="有效频率" Style="{StaticResource DetailLabel}" />
+                            <TextBlock Text="{Binding EffectiveFrequencyText}" Style="{StaticResource DetailValue}" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,7,0,0" ToolTip="核心请求电压 VID；不等于主板供电端实测电压，缺测显示 -">
+                            <TextBlock Text="核心 VID" Style="{StaticResource DetailLabel}" />
+                            <TextBlock Text="{Binding VoltageText}" Style="{StaticResource DetailValue}" />
+                        </StackPanel>
+                    </Grid>
+                    <controls:MiniBar Height="3" Margin="0,9,0,0" Value="{Binding LiveUsage, Mode=OneWay}"
+                                      FillBrush="{StaticResource CoreBusyAccentBrush}" TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                    <DockPanel Margin="0,7,0,0" ToolTip="历史峰值取有效频率；时长为进入历史峰值 99% 档的累计观测时长">
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding PeakDurationText}" Style="{StaticResource DetailLabel}" HorizontalAlignment="Right" />
+                        <TextBlock Text="{Binding PeakFreqText}" Style="{StaticResource DetailLabel}" />
+                    </DockPanel>
+                    <Border BorderBrush="{StaticResource CoreBusyBorderWeakBrush}" BorderThickness="0,1,0,0"
+                            Padding="0,8,0,0" Margin="0,9,0,0">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding Level.EtaText}" FontSize="10" HorizontalAlignment="Right"
+                                           Foreground="{StaticResource CoreBusyAccentBrush}" />
+                                <TextBlock Text="升级进度" FontSize="11" Foreground="{StaticResource CoreBusyTextSecondaryBrush}" />
+                            </DockPanel>
+                            <Border x:Name="ExpTrack" Height="5" Margin="0,7,0,0" CornerRadius="2.5"
+                                    Background="{StaticResource CoreBusyTrackBrush}" ToolTip="{Binding Level.TipText}" ToolTipService.ShowDuration="20000">
+                                <Border x:Name="ExpFill" HorizontalAlignment="Left" Width="0" CornerRadius="2.5"
+                                        Background="{StaticResource CoreBusyAccentBrush}" />
+                            </Border>
+                            <TextBlock Text="{Binding Level.ProgressSummaryText}" Style="{StaticResource DetailLabel}"
+                                       Margin="0,6,0,0" TextWrapping="Wrap" />
+                            <Grid Margin="0,7,0,0" ToolTip="{Binding Level.NextEvolutionTip}"
+                                  Visibility="{Binding Level.HasNextEvolution, Converter={StaticResource CoreBusyBoolToVis}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="40" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <controls:CoreEvolutionVisual Width="32" Height="32" IsSilhouette="True"
+                                                              Vendor="{Binding Level.Vendor}" Stage="{Binding Level.NextStageIndex}" />
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Level.NextEvolutionText}" FontSize="10.5"
+                                               Foreground="{StaticResource CoreBusyTextSecondaryBrush}" TextWrapping="Wrap" />
+                                    <controls:MiniBar x:Name="EvolutionTrack" Height="3" Margin="0,5,0,0" Maximum="1"
+                                                      Value="{Binding Level.EvolutionProgress, Mode=OneWay}"
+                                                      FillBrush="{StaticResource CoreBusyAccentBrush}" TrackBrush="{StaticResource CoreBusyTrackBrush}" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
-            </Border>
+            </ScrollViewer>
         </Border>
     </Popup>
 </Grid>
-
 </Window>

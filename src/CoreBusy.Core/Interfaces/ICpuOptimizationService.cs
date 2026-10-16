@@ -22,6 +22,9 @@ public interface ICpuOptimizationService
     /// <summary>支持状态说明（不支持时直接展示原因，不静默降级）。</summary>
     string StatusDetail { get; }
 
+    /// <summary>最近一次套用、回读或恢复结果。</summary>
+    string LastDetail => "";
+
     /// <summary>
     /// 按真实拓扑过滤后的可用亲和性模式。
     /// 例如 Intel 非混合架构与 AMD 不返回 P/E 两项，避免界面给出无法落地的选项。
@@ -67,7 +70,7 @@ public interface ICpuOptimizationService
     int ApplyRulesNow(OptimizationSettings settings, bool gameModeActive);
 
     /// <summary>
-    /// 游戏模式联动：进入全屏游戏时套用游戏预设，退出时解除（优先级/亲和性恢复为默认）。
+    /// 游戏模式联动：进入全屏游戏时套用游戏预设，退出时解除（仅恢复本工具改动的字段到原值）。
     /// 传入 null 表示游戏已退出。
     /// </summary>
     void ApplyGameMode(OptimizationSettings settings, string? gameProcessName);

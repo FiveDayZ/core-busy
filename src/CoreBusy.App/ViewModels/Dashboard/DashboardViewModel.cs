@@ -72,6 +72,7 @@ public sealed class DashboardViewModel : ObservableObject
     private readonly AppSettings _settings;
     private bool _isPerformanceMode;
     private bool _isCumulativeLoad;
+    private bool _isPresentationActive = true;
     private string _statusText = "系统运行正常";
 
     // 状态栏药丸的语义色：正常=绿 / 性能模式=琥珀 / 传感器关闭=蓝。
@@ -140,6 +141,9 @@ public sealed class DashboardViewModel : ObservableObject
     /// 这里无需再判口径。
     /// </remarks>
     private readonly Dictionary<string, CoreExpEntry> _expLedger;
+    private readonly Dictionary<string, (double Load, double Floor, double Awarded)> _expBaseline;
+    private readonly Dictionary<string, CoreRoleStats> _roleBaseline;
+    private bool _stopped;
 
     /// <summary>
     /// 上次落盘时的经验总量，用于判定"要不要写盘"。
@@ -277,20 +281,18 @@ public sealed class DashboardViewModel : ObservableObject
 
     /// <summary>上一次积分对应的运行秒数 —— 与本次相减得到墙钟 Δt。</summary>
     private double _lastAccumulatedSeconds;
+    private double _validDeltaSeconds;
+    private string _monitorErrorText = "";
+    private string _snapshotStatusText = "等待首次采样";
+    public string MonitorErrorText { get => _monitorErrorText; private set { if (SetProperty(ref _monitorErrorText, value)) { OnPropertyChanged(nameof(BoardHintText)); UpdateStatusText(); } } }
+    public string BoardHintText => MonitorErrorText.Length > 0 ? MonitorErrorText : "点击核心，查看成长档案";
+    public string SnapshotStatusText { get => _snapshotStatusText; private set => SetProperty(ref _snapshotStatusText, value); }
 
     /// <summary>
-    /// 累积视图下的全局显示序（跨分区，按累积均值降序）。
-    /// 保留上一帧顺序作为基序，配合滞回阈值抑制"均值接近的核反复换位"。
+    /// 累积视图下的全局显示序（跨分区，按有效采样的累积均值降序）。
     /// </summary>
     private readonly List<DashboardCoreVm> _displayOrder = [];
 
-    /// <summary>
-    /// 名次滞回阈值（累积均值百分点）。低于该差距不换位：
-    /// 每换一次位都要重建 ItemContainer（新控件从 0 动画到目标值），
-    /// 均值接近的核心若是每帧互换，界面会持续闪动且白白吃掉 CPU。取 0.4 个百分点
-    /// 约等于"运行 10 分钟内相差 2.4 核·秒"，是肉眼可辨的实质差距。
-    /// </summary>
-    private const double RankHysteresis = 0.4;
 
     /// <summary>
     /// 累积积分的断点判定倍率：Δt 超过「采样周期 × 该倍率」即判为休眠 / 严重节流造成的断点，
@@ -407,6 +409,10 @@ public sealed class DashboardViewModel : ObservableObject
 
         // EXP 账本在构造期读回（readonly，全生命周期一份）。
         (_expLedger, _) = CoreExpStore.Load();
+        // 基量在启动时冻结；会话累加器不因落盘清零，不能再把已合并的账本当基量。
+        _expBaseline = _expLedger.ToDictionary(p => p.Key,
+            p => (p.Value.LoadCoreMinutes, p.Value.FloorCoreMinutes, p.Value.ExpCoreMinutes), StringComparer.Ordinal);
+        _roleBaseline = _roleLedger.ToDictionary(p => p.Key, p => p.Value.ToStats(), StringComparer.Ordinal);
 
         // 累计运行时长基量在构造期读回（v1.26.5），状态栏主显"累计"与悬浮提示用。
         (_uptimeBaseSeconds, _lastSessionSeconds) = RuntimeStatsStore.Load();
@@ -422,7 +428,7 @@ public sealed class DashboardViewModel : ObservableObject
         _healthBaselineFingerprint = Fingerprint(_healthBaselines);
 
         var info = _monitor.GetCpuInfo();
-        CpuName = info.Name;
+        CpuName = info.Name + (_monitor is MockCpuMonitorService ? " · 模拟演示" : "");
         CpuSpecs = BuildSpecs(info);
         _cpuInfo = info;
 
@@ -738,12 +744,17 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>停止刷新，并把每日能耗账本与健康度基线立即落盘（退出前最后的保存机会）。</summary>
     public void Stop()
     {
+        if (_stopped)
+            return;
+        _stopped = true;
         _timer.Stop();
+        ClearGameMode();
         _energyLedger.SaveIfNeeded(force: true);
         SaveHealthBaselinesIfNeeded(force: true);
 
         // 正常退出时强制合并 EXP（崩溃/强杀丢掉的只是这段差值，账本本身无损）。
         SaveExpIfNeeded(elapsedSinceStart(), force: true);
+        RefreshCoreRoles(elapsedSinceStart(), force: true);
 
         // 累计运行时长（v1.26.5）：退出前强制落最终值，并把本次会话记为"上次"。
         RuntimeStatsStore.Save(
@@ -753,6 +764,8 @@ public sealed class DashboardViewModel : ObservableObject
         // 遥测（v1.34.0）：退出前把累计量固化，并 best-effort 补发一次心跳（≤1.5s）。
         _telemetry.Save();
         TryReportTelemetryOnExit();
+        if (_optimization is IDisposable optimization) optimization.Dispose();
+        if (_monitor is IDisposable disposable) disposable.Dispose();
     }
 
     /// <summary>自启动以来的墙钟秒数（与 <see cref="_uptime"/> 同源）。</summary>
@@ -824,6 +837,7 @@ public sealed class DashboardViewModel : ObservableObject
 
         // 总开关关闭时也要调用一次服务：它需要借这次调用撤销「仅游戏时生效」规则的残留，
         // 否则用户以为"关了就不影响"，相关进程却仍带着被压低的优先级在跑。
+        if (!optimization.Enabled) ClearGameMode();
         var gameModeActive = optimization.Enabled && TrackGameMode(optimization);
         optimizationService.ApplyRulesNow(optimization, gameModeActive);
     }
@@ -841,7 +855,10 @@ public sealed class DashboardViewModel : ObservableObject
         var detector = _gameDetector;
         if (optimizationService is null || detector is null
             || !optimization.GameModeEnabled || !_settings.GameDetectionEnabled)
+        {
+            ClearGameMode();
             return false;
+        }
 
         string? game;
         try
@@ -854,33 +871,50 @@ public sealed class DashboardViewModel : ObservableObject
             game = null;
         }
 
+        if (game is null)
+        {
+            ClearGameMode();
+            return false;
+        }
         if (string.Equals(game, _activeGameProcess, StringComparison.OrdinalIgnoreCase))
-            return game is not null;
+        {
+            // 服务内部节流并回读；同名游戏重启或被外部改动后也能重新接管。
+            optimizationService.ApplyGameMode(optimization, game);
+            return true;
+        }
 
         _activeGameProcess = game;
         optimizationService.ApplyGameMode(optimization, game);
 
-        if (game is null)
-        {
-            // 只有"本次游戏会话确实由本工具改过电源方案"、且用户在设置里没有选择固定预设时，
-            // 才还原。否则会把用户主动选的「性能优先」当成游戏残留一起撤掉 ——
-            // 这是两处都对、组合起来错的典型场景。
-            if (_gamePowerApplied && optimization.PowerPreset == PowerPreset.None && _powerPolicy is not null)
-            {
-                _powerPolicy.Restore(out _);
-            }
-
-            _gamePowerApplied = false;
-            return false;
-        }
-
         if (optimization.GameAppliesPowerPreset && !_gamePowerApplied && _powerPolicy is not null)
         {
-            // 先应用成功再置位，避免退出时去还原一个从未改动过的方案。
-            _gamePowerApplied = _powerPolicy.Apply(PowerPreset.Performance, out _);
+            // 部分应用且回滚失败时也必须保留恢复责任；完全回滚则没有临时备份。
+            var applied = _powerPolicy.ApplyTemporary(PowerPreset.Performance, out var error);
+            _gamePowerApplied = applied || _powerPolicy.HasTemporaryBackup;
+            if (!applied) AppLog.Write("game power apply", error);
         }
 
         return true;
+    }
+
+    private void ClearGameMode()
+    {
+        if (_activeGameProcess is not null)
+        {
+            try { _optimization?.ApplyGameMode(_settings.Optimization, null); }
+            catch (Exception ex) { AppLog.Write("game cleanup", ex); }
+            try { _optimization?.ApplyRulesNow(_settings.Optimization, false); }
+            catch (Exception ex) { AppLog.Write("game rules cleanup", ex); }
+        }
+        _activeGameProcess = null;
+        if (!_gamePowerApplied) return;
+        try
+        {
+            if (_powerPolicy is not null && _powerPolicy.RestoreTemporary(out var error))
+                _gamePowerApplied = false;
+            else AppLog.Write("game power restore", "还原未完成，保留备份供重试");
+        }
+        catch (Exception ex) { AppLog.Write("game power restore", ex); }
     }
 
     /// <summary>
@@ -905,35 +939,21 @@ public sealed class DashboardViewModel : ObservableObject
     /// </summary>
     public void ApplySettings(AppSettings settings)
     {
-        var gameModeWasActive = _settings.Optimization.GameModeEnabled && _settings.Optimization.Enabled;
-
+        // 先结束旧会话，再用新配置进入；固定电源应用已在服务端安全移交临时备份。
+        ClearGameMode();
         _settings.IntervalMilliseconds = NormalizeInterval(settings.IntervalMilliseconds);
         _settings.SensorsEnabled = settings.SensorsEnabled;
         _settings.GameDetectionEnabled = settings.GameDetectionEnabled;
         _settings.Theme = settings.Theme;
         _settings.CoreLayout = settings.CoreLayout;
         _settings.CloseToTray = settings.CloseToTray;
+        _settings.CheckUpdatesOnStartup = settings.CheckUpdatesOnStartup;
         _settings.Optimization = settings.Optimization;
         _settings.TelemetryEnabled = settings.TelemetryEnabled;
         _settings.TelemetryServerUrl = settings.TelemetryServerUrl;
         _settings.TelemetryToken = settings.TelemetryToken;
         _settings.TelemetryAlias = settings.TelemetryAlias;
         SettingsStore.Save(_settings);
-
-        // 优化总开关或游戏联动被关掉时，若正处在游戏会话中，立即撤销并复位边沿状态 ——
-        // 否则 _activeGameProcess 会一直停在游戏名上，重新开启后要等下次切换窗口才生效。
-        var optimizationEnabledNow = _settings.Optimization.Enabled && _settings.Optimization.GameModeEnabled;
-        if (!optimizationEnabledNow)
-        {
-            if (_activeGameProcess is not null)
-                _optimization?.ApplyGameMode(_settings.Optimization, null);
-
-            if (_gamePowerApplied && _settings.Optimization.PowerPreset == PowerPreset.None)
-                _powerPolicy?.Restore(out _);
-
-            _activeGameProcess = null;
-            _gamePowerApplied = false;
-        }
 
         IsPerformanceMode = false;
         ApplySamplingConfiguration(performanceMode: false);
@@ -948,6 +968,9 @@ public sealed class DashboardViewModel : ObservableObject
             ? PerformanceModeIntervalMs                       // 性能模式：低开销档。
             : NormalizeInterval(_settings.IntervalMilliseconds);
 
+        // 隐藏时自动采用 2 秒节奏；保留传感器与时间积分，恢复后回到用户设置。
+        if (!_isPresentationActive) intervalMs = Math.Max(intervalMs, PerformanceModeIntervalMs);
+
         // 性能模式暂停硬件传感器轮询（温度/功耗/风扇显示为 "-"）。
         _monitor.SensorsEnabled = performanceMode ? false : _settings.SensorsEnabled;
         _monitor.SampleInterval = TimeSpan.FromMilliseconds(intervalMs);
@@ -959,6 +982,12 @@ public sealed class DashboardViewModel : ObservableObject
     private void UpdateStatusText()
     {
         var effective = (int)_monitor.SampleInterval.TotalMilliseconds;
+        if (MonitorErrorText.Length > 0)
+        {
+            StatusText = MonitorErrorText;
+            StatusBrush = Frozen("#E8C044"); StatusDimBrush = Frozen("#26E8C044");
+            return;
+        }
         StatusText = _isPerformanceMode
             ? $"性能模式 · 采样 {effective}ms · 硬件传感器已暂停"
             : _settings.SensorsEnabled
@@ -990,46 +1019,27 @@ public sealed class DashboardViewModel : ObservableObject
 
     /// <summary>
     /// 按采集服务的分组元数据构建界面分区与 Tile（顺序与快照序、热力图行序严格一致）。
-    /// 段数 ≥3 时整体收一档，保证一屏内不出现纵向滚动条（规范 §9）。
+    /// 分区较多时使用紧凑卡；超出视口的核心通过滚动访问，不压缩成不可读的小卡。
     /// </summary>
     private void BuildCoreGroups(IReadOnlyList<CpuCoreGroup> groups, IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
         var dense = groups.Count >= 3;
         var index = 0;
-        var groupOrdinal = 0;
-
-        // 布局列数全局统一（取各段自然列数的最大值，且 ≥4 基准）：
-        // UniformGrid 的单元宽 = 分区宽 / 列数，若列数按各段自己的核数算，
-        // 少核段（如混合架构的 1 颗 P 核）会独占整行被拉长（U300 实测）。
-        // 统一后少核段与其余段卡宽一致，只占基准网格中的前几格。
-        var naturalColumns = new int[groups.Count];
-        var layoutColumns = 4;
-        for (var g = 0; g < groups.Count; g++)
-        {
-            var groupCount = groups[g].CoreIds.Count;
-
-            // 列数上限 4：窄窗（900px）下 8 颗仍能保持 ≥130px 的卡宽，超出后折行。
-            naturalColumns[g] = groupCount <= 4 ? Math.Max(1, groupCount)
-                : groupCount <= 8 ? 4
-                : groupCount <= 12 ? 6
-                : 8;
-
-            if (naturalColumns[g] > layoutColumns)
-                layoutColumns = naturalColumns[g];
-        }
+        // 同一窗口的分区共用列宽：常规 4 列；6/12/24 核分区可扩为 6 列，
+        // 8/16/32 核分区在足够宽时使用 8 列。具体列数由实际可用宽度限制。
+        var largest = groups.Select(g => g.CoreIds.Count).DefaultIfEmpty(0).Max();
+        var layoutColumns = largest <= 4 ? 4 : largest <= 6 || largest is 12 or 24 ? 6 : 8;
 
         foreach (var group in groups)
         {
             var count = group.CoreIds.Count;
-            var columns = naturalColumns[groupOrdinal];
-
-            var compact = dense || group.Kind == CoreGroupKind.Efficiency || columns >= 6;
+            var compact = dense || group.Kind == CoreGroupKind.Efficiency || count > 8;
             var cores = new List<DashboardCoreVm>(count);
 
             foreach (var id in group.CoreIds)
             {
                 var snapshot = index < snapshots.Count ? snapshots[index] : null;
-                var vm = new DashboardCoreVm(id, compact, snapshot?.Threads);
+                var vm = new DashboardCoreVm(id, compact, snapshot?.Threads, _cpuInfo.VendorKind);
                 if (snapshot is not null)
                     vm.ApplyLive(snapshot);
 
@@ -1041,7 +1051,6 @@ public sealed class DashboardViewModel : ObservableObject
 
             // 负载口径开关是全局唯一的，只挂到第一段分区（CoreGroupVm 内部据此决定可见性）。
             CoreGroups.Add(new CoreGroupVm(group, compact, layoutColumns, cores, isFirstGroup: CoreGroups.Count == 0));
-            groupOrdinal++;
         }
     }
 
@@ -1073,16 +1082,18 @@ public sealed class DashboardViewModel : ObservableObject
     {
         var delta = elapsedSeconds - _lastAccumulatedSeconds;
         _lastAccumulatedSeconds = elapsedSeconds;
-
-        if (delta < 0)
-            return; // 秒表回拨或重置后的首帧：不产生负权重。
+        _validDeltaSeconds = 0;
 
         var maxDelta = _monitor.SampleInterval.TotalSeconds * IntegrationGapFactor;
-        if (delta > maxDelta)
+        if (!double.IsFinite(delta) || delta <= 0 || delta > maxDelta)
         {
+            _energy.Accumulate(double.NaN, 0);
+            _systemEnergy.Accumulate(double.NaN, 0);
+            _systemBreakdown = SystemPowerBreakdown.Unavailable;
             return;
         }
 
+        _validDeltaSeconds = delta;
         _cumulative.Accumulate(snapshots, delta);
 
         // 逐核经验（v1.22.0）：与负载共用这份Δt —— 两者描写的是同一段时间轴，
@@ -1113,6 +1124,12 @@ public sealed class DashboardViewModel : ObservableObject
             // 它会让 HasLiveSample 转 false，界面照实降级为"-"，而不是继续显示一个已停更的旧数。
             _systemEnergy.Accumulate(
                 _systemBreakdown.IsUsable ? _systemBreakdown.TotalWatt : double.NaN, delta);
+        }
+
+        else
+        {
+            _systemBreakdown = SystemPowerBreakdown.Unavailable;
+            _systemEnergy.Accumulate(double.NaN, delta);
         }
 
         // 同一份样本同时进每日账本——日历与状态栏的能耗因此严格同源，不会互相打架。
@@ -1150,36 +1167,32 @@ public sealed class DashboardViewModel : ObservableObject
     /// 判定用「账本 + 本次运行」的合并量，否则重启后角色要重新积累很久才稳定 ——
     /// 与 EXP 同一个道理。落盘间隔比 EXP 稀（统计量变化慢）。
     /// </remarks>
-    private void RefreshCoreRoles(double elapsedSeconds)
+    private void RefreshCoreRoles(double elapsedSeconds, bool force = false)
     {
         foreach (var id in _role.CoreIds)
         {
             var stats = _role.StatsOf(id);
-            if (!_roleLedger.TryGetValue(id, out var entry))
-                continue;
-
+            var baseline = _roleBaseline.GetValueOrDefault(id) ?? new CoreRoleStats();
+            var totals = new CoreRoleStats
+            {
+                ObservedCoreMinutes = baseline.ObservedCoreMinutes + stats.ObservedCoreMinutes,
+                LoadCoreMinutes = baseline.LoadCoreMinutes + stats.LoadCoreMinutes,
+                LoadSquaredCoreMinutes = baseline.LoadSquaredCoreMinutes + stats.LoadSquaredCoreMinutes,
+                PeakPercent = MaxOf(baseline.PeakPercent, stats.PeakPercent),
+                DayLoadCoreMinutes = baseline.DayLoadCoreMinutes + stats.DayLoadCoreMinutes,
+                NightLoadCoreMinutes = baseline.NightLoadCoreMinutes + stats.NightLoadCoreMinutes,
+            };
+            CoreRoleStore.Merge(_roleLedger, id, totals);
             if (_allCoresById.TryGetValue(id, out var vm))
             {
-                var merged = new CoreRoleStats
-                {
-                    ObservedCoreMinutes = entry.ObservedCoreMinutes + stats.ObservedCoreMinutes,
-                    LoadCoreMinutes = entry.LoadCoreMinutes + stats.LoadCoreMinutes,
-                    LoadSquaredCoreMinutes = entry.LoadSquaredCoreMinutes + stats.LoadSquaredCoreMinutes,
-                    PeakPercent = MaxOf(entry.PeakPercent, stats.PeakPercent),
-                    DayLoadCoreMinutes = entry.DayLoadCoreMinutes + stats.DayLoadCoreMinutes,
-                    NightLoadCoreMinutes = entry.NightLoadCoreMinutes + stats.NightLoadCoreMinutes,
-                };
+                var merged = _roleLedger[id].ToStats();
                 vm.Role.Refresh(CoreRoleClassifier.Classify(merged), merged);
             }
-
-            CoreRoleStore.Merge(_roleLedger, id, stats);
         }
 
-        if (_roleLastSavedAtSeconds > 0
+        if (!force && _roleLastSavedAtSeconds > 0
             && elapsedSeconds - _roleLastSavedAtSeconds < RoleSaveIntervalMinutes * 60.0)
-        {
             return;
-        }
 
         CoreRoleStore.Save(_roleLedger);
         _roleLastSavedAtSeconds = elapsedSeconds;
@@ -1228,25 +1241,7 @@ public sealed class DashboardViewModel : ObservableObject
             return;
 
         foreach (var id in _exp.CoreIds)
-        {
-            var load = _exp.LoadCoreMinutes(id);
-            var floor = _exp.FloorCoreMinutes(id);
-
-            // 账本里可能还没有这颗核（首次出现）；有则取两者较大值。
-            // 取 max 而非相加：两者的 Δt 区间是同一份，账本覆盖的是上次落盘之前的那段，
-            // 累加器覆盖的是本次运行的全部—— 直接相加会在两者区间重叠时重复计数。
-            // （实际上二者区间不重叠，但 max 对"账本已被别处抬高"也更安全。）
-            if (_expLedger.TryGetValue(id, out var entry))
-            {
-                entry.LoadCoreMinutes = Math.Max(entry.LoadCoreMinutes, load);
-                entry.FloorCoreMinutes = Math.Max(entry.FloorCoreMinutes, floor);
-            }
-            else
-            {
-                entry = new CoreExpEntry { LoadCoreMinutes = load, FloorCoreMinutes = floor };
-                _expLedger[id] = entry;
-            }
-        }
+            UpdateExpEntry(id);
 
         CoreExpStore.Save(_expLedger);
         _expLastSavedCoreMinutes = total;
@@ -1273,24 +1268,6 @@ public sealed class DashboardViewModel : ObservableObject
     public System.Windows.Visibility CollapseHintVisibility =>
         _focusedCoreId is null ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
 
-    private System.DateTime? _peakTickLastUtc;
-    /// <summary>峰值档上一帧的 UTC 时间戳（v1.30.0），供 NextPeakDt 计算墙钟差。</summary>
-    private System.DateTime? _peakFrameLastUtc;
-
-    /// <summary>
-    /// 峰值档本帧时长（v1.30.0）：刷新节拍的墙钟差（秒），上限 60s。
-    /// 首帧返回 0；进程挂起/传感器休眠恢复后的陈旧节拍不把睡眠记成峰值。
-    /// </summary>
-    private double NextPeakDt()
-    {
-        var nowUtc = System.DateTime.UtcNow;
-        double dt = _peakFrameLastUtc is { } last
-            ? System.Math.Min((nowUtc - last).TotalSeconds, 60.0)
-            : 0.0;
-        _peakFrameLastUtc = nowUtc;
-        return dt;
-    }
-
     // ── 遥测（v1.34.0）────────────────────────────────────────────────
     //    心跳只报"当前累计总量"（幂等快照）：断网丢包都无害，下一个 10 分钟周期
     //    带更新的总量自然覆盖，无需补报队列。上报失败静默，绝不影响监控主流程。
@@ -1303,24 +1280,6 @@ public sealed class DashboardViewModel : ObservableObject
 
     /// <summary>启动后先观测这么久才发第一次心跳，让健康度/等级攒出像样的快照。</summary>
     private const double TelemetryFirstReportDelaySeconds = 30.0;
-
-    private System.DateTime? _telemetryFrameLastUtc;
-
-    /// <summary>
-    /// 遥测本帧墙钟差（秒），与 <see cref="NextPeakDt"/> 同一套纪律：
-    /// 首帧 0、休眠恢复钳 60s —— 睡眠时间既不记时长也不记能耗。
-    /// 独立时间戳而非复用 _peakFrameLastUtc：那一份在逐核循环里被每核推进一次，
-    /// 语义是"峰值档判定的帧间差"，与整机累计的帧间差不是同一个东西。
-    /// </summary>
-    private double NextTelemetryDt()
-    {
-        var nowUtc = System.DateTime.UtcNow;
-        double dt = _telemetryFrameLastUtc is { } last
-            ? System.Math.Min((nowUtc - last).TotalSeconds, 60.0)
-            : 0.0;
-        _telemetryFrameLastUtc = nowUtc;
-        return dt;
-    }
 
     /// <summary>按节律把遥测账本落盘（首帧无条件执行一次，把读回的基量固化）。</summary>
     private void MaybeSaveTelemetry(double elapsedSeconds)
@@ -1444,21 +1403,29 @@ public sealed class DashboardViewModel : ObservableObject
         }
     }
 
+    private CoreExpEntry UpdateExpEntry(string id)
+    {
+        if (!_expLedger.TryGetValue(id, out var entry))
+            _expLedger[id] = entry = new CoreExpEntry();
+        var baseline = _expBaseline.GetValueOrDefault(id);
+        entry.LoadCoreMinutes = Math.Max(entry.LoadCoreMinutes, baseline.Load + _exp.LoadCoreMinutes(id));
+        entry.FloorCoreMinutes = Math.Max(entry.FloorCoreMinutes, baseline.Floor + _exp.FloorCoreMinutes(id));
+        entry.AwardedCoreMinutes = Math.Max(entry.ExpCoreMinutes, baseline.Awarded + _exp.ExpCoreMinutes(id));
+        return entry;
+    }
+
     private void RefreshCoreLevels(IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
+        var peakDt = _validDeltaSeconds;
         foreach (var core in snapshots)
         {
             if (!_allCoresById.TryGetValue(core.Id, out var vm))
                 continue;
 
-            // **账本 + 本次运行增量**，缺一不可。
-            // 只取累加器的话，进程一停历史就归零，重启后每颗核都回到 Lv 1 ——
-            // 而"跨进程延续"正是 EXP 体系的前提（跨日重置等于每天白攒）。
-            // 累加器覆盖"上次落盘之后"这一段，账本覆盖"上次落盘之前"，两者区间不重叠，
-            // 故相加而非取 max。
+            var entry = UpdateExpEntry(core.Id);
             var runExp = _exp.ExpCoreMinutes(core.Id);
-            var ledgerExp = _expLedger.TryGetValue(core.Id, out var ledger) ? ledger.ExpCoreMinutes : 0.0;
-            vm.Level.Refresh(ledgerExp + runExp, _exp.IsFloorDominated(core.Id));
+            vm.Level.Refresh(entry.ExpCoreMinutes,
+                entry.FloorCoreMinutes > 0 && entry.FloorCoreMinutes >= entry.LoadCoreMinutes);
 
             // EXP 速率（v1.27.0）：本次运行的均值（核·分/秒），驱动弹卡"距升级约 X"。
             // 观测不足 30s 时速率噪声太大，给 0 走"正在积累经验…"占位。
@@ -1466,10 +1433,8 @@ public sealed class DashboardViewModel : ObservableObject
             vm.Level.UpdateEta(expRate);
 
             // 峰值留档：只在新高时写，且读不到就跳过（NaN 不参与比较）。
-            if (!_expLedger.TryGetValue(core.Id, out var entry))
-                continue;
-
-            if (!double.IsNaN(core.UsagePercent) && core.UsagePercent > entry.PeakPercent)
+            if (double.IsFinite(core.UsagePercent)
+                && (double.IsNaN(entry.PeakPercent) || core.UsagePercent > entry.PeakPercent))
             {
                 entry.PeakPercent = core.UsagePercent;
                 entry.PeakAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
@@ -1486,10 +1451,6 @@ public sealed class DashboardViewModel : ObservableObject
             // 峰值频率上屏（v1.29.0）：账本 MaxGhz 推给弹卡（NaN 降级"峰值 -"，setter 按值去重，
             // 只在新高时通知 —— 与"逐项比对再通知"的刷新纪律一致）。
             vm.ApplyPeakFreq(entry.MaxGhz);
-
-            // 峰值档本帧时长（v1.30.0）：刷新节拍墙钟差，首帧/休眠恢复钳 60s 上限
-            //（休眠中传感器是陈旧读数，不把整段睡眠记成「在峰值档」）。
-            var peakDt = NextPeakDt();
 
             // 峰值累计持续时长（v1.30.0）：当前有效频率 ≥ 账本峰值（MaxGhz）的 99% 视为
             // 「在峰值档」，把本帧时长累进账本（只增不减）。峰值带随 MaxGhz 新高收紧 ——
@@ -1538,6 +1499,7 @@ public sealed class DashboardViewModel : ObservableObject
             CpuPackageWatt = Opt(snapshot.PackagePowerW),
             GpuMeasuredWatt = Opt(snapshot.DiscreteGpuPowerW),
             DiscreteGpuNames = discreteNames,
+            DiscreteGpuReadings = snapshot.DiscreteGpuReadings,
             HasGpu = hardware.HasGpu,
             GpuName = hardware.GpuName,
             GpuLoadPercent = Opt(snapshot.GpuUtilizationPercent),
@@ -1555,17 +1517,37 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>NaN / 无穷 → null（"读不到"）；其余原样（含 0）。</summary>
     private static double? Opt(double value) => double.IsFinite(value) ? value : null;
 
+    /// <summary>窗口隐藏/最小化时停用展示工作；恢复时立即补上最新读数。</summary>
+    public void SetPresentationActive(bool active)
+    {
+        if (_isPresentationActive == active) return;
+        _isPresentationActive = active;
+        if (_stopped) return;
+        ApplySamplingConfiguration(IsPerformanceMode);
+        if (active) Tick();
+    }
+
     /// <summary>一次采样：读取快照并刷新全部面板。</summary>
     public void Tick()
     {
-        var snapshots = _monitor.GetCoreSnapshots();
+        var frame = _monitor.GetFrame();
+        var fresh = frame.IsFresh(_monitor.SampleInterval);
+        var snapshots = fresh ? frame.Cores : frame.Cores.Select(core => core with
+        {
+            UsagePercent = double.NaN, FrequencyGHz = double.NaN, EffectiveFrequencyGHz = double.NaN,
+            CoreVoltageV = double.NaN, HardwareActivityPercent = double.NaN,
+            Threads = core.Threads.Select(thread => thread with { UsagePercent = double.NaN, FrequencyGHz = double.NaN }).ToArray(),
+        }).ToArray();
+        var snapshot = fresh ? frame.Cpu : CpuSnapshot.Unavailable;
+        MonitorErrorText = _monitor.UnavailableReason ?? (fresh ? "" : "采样暂不可用或已过期，已暂停无效数据统计");
+        SnapshotStatusText = MonitorErrorText.Length == 0 ? $"最近采样：{DateTime.Now.AddSeconds(-frame.AgeSeconds):HH:mm:ss} · 累积负载仅统计本次有效采样"
+            : MonitorErrorText;
 
         // Δt 的读数点必须紧贴 GetCoreSnapshots()：每帧都在同一相位取一次墙钟，
         // 相邻两帧之差才等于这段 return-to-return 的真实间隔。若放在 GetSnapshot()
         // （含传感器读取与锁竞争，耗时随帧波动）之后，差值会多出 S_i - S_{i-1} 的
         // 抖动项，等于往积分权重里掺噪声。
         var elapsed = _uptime.Elapsed;
-        var snapshot = _monitor.GetSnapshot();
 
         // 主显 = **累计运行时间**（v1.27.1）：基量 + 本次。悬浮提示里再拆"本次 / 上次"。
         UptimeText = FmtTotalUptime(_uptimeBaseSeconds + elapsed.TotalSeconds);
@@ -1583,10 +1565,13 @@ public sealed class DashboardViewModel : ObservableObject
         AccumulateSample(snapshots, snapshot, hardware, elapsed.TotalSeconds);
 
         // 2. 核心角色卡（扁平序 = 分区序）。
-        if (IsCumulativeLoad)
-            ApplyCumulativeCoreView(snapshots);
-        else
-            ApplyLiveCoreView(snapshots);
+        if (_isPresentationActive)
+        {
+            if (IsCumulativeLoad)
+                ApplyCumulativeCoreView(snapshots);
+            else
+                ApplyLiveCoreView(snapshots);
+        }
 
         // 2b. 核心健康度（v1.17.0）：依赖**窗口统计**，晚一帧看到分数没有影响；
         //     且它自己要在锁外跑一次事件日志查询（内部 5 分钟节流），
@@ -1604,16 +1589,23 @@ public sealed class DashboardViewModel : ObservableObject
 
         // 2c-bis. 遥测（v1.34.0）：逐帧累计能耗、按节律落盘与心跳上报。
         //     放在等级刷新之后：coresGrade 里的 level 取的就是刚刷新完的 vm.Level.Level。
-        _telemetry.ObserveFrame(snapshot.PackagePowerW, NextTelemetryDt());
+        _telemetry.ObserveFrame(snapshot.PackagePowerW, _validDeltaSeconds);
         MaybeSaveTelemetry(elapsed.TotalSeconds);
         MaybeReportTelemetry(snapshots);
+
+        // 后台仍须检测游戏、应用进程规则与恢复电源策略。
+        TickOptimization();
+
+        // 托盘/最小化时继续采样、积分和保存，只省去不可见面板的格式化与刷新。
+        if (!_isPresentationActive)
+            return;
 
         // 2d. 逐核角色（v1.22.0）。放在等级之后：两者都只读同一份账本，
         //     但角色判定要在账本并入之后再做，才能拿到「历史 + 本次」的合并量。
 
         // 3. 总览指标（NaN 安全：传感器缺失显示 "-"）。
-        TotalUsage = snapshot.TotalUsagePercent;
-        TotalUsageText = $"{snapshot.TotalUsagePercent:0}%";
+        TotalUsage = double.IsFinite(snapshot.TotalUsagePercent) ? snapshot.TotalUsagePercent : 0;
+        TotalUsageText = double.IsFinite(snapshot.TotalUsagePercent) ? $"{snapshot.TotalUsagePercent:0}%" : "-";
         TempText = FmtTempC(snapshot.PackageTemperatureC, "℃");
         PowerText = FmtValueUnit(snapshot.PackagePowerW, "0", "W");
         FreqText = FmtFreq(snapshot.AverageFrequencyGHz);
@@ -1637,10 +1629,6 @@ public sealed class DashboardViewModel : ObservableObject
         //     快照在第 0 步已读好（能耗模型要用），这里只负责把它写成界面文本。
         //     文本未变时 SetProperty 不触发通知，因此每帧调用不会造成无效重绘。
         ApplySystemHardware(hardware, snapshot);
-
-        // 4f. CPU 核心优化（v1.12.0）：进程规则套用 + 游戏模式联动。
-        //     规则重扫在服务内部按 5 秒节流，这里每帧调用只付出一次时间比较的代价。
-        TickOptimization();
 
         // 5. 峰值温度。传感器不可用时 PeakTemperatureC 为 NaN，但 PeakTemperatureTime
         //    仍有值（服务构造时刻），直接显示会得到"峰值 - 09:12:33"这种半截信息，故时刻一并留空。
@@ -1737,11 +1725,6 @@ public sealed class DashboardViewModel : ObservableObject
         _healthScores = _healthTracker.Score();
 
         _healthByCore.Clear();
-        // 峰值档累计时长的本帧增量（v1.30.0）：每轮刷新取一次；首帧/休眠恢复钳 60s 上限
-        //（休眠中传感器是陈旧读数，不把整段睡眠记成「在峰值」）。
-        var nowUtc = System.DateTime.UtcNow;
-        _peakTickLastUtc = nowUtc;
-
         foreach (var score in _healthScores)
             _healthByCore[score.CoreId] = score;
 
@@ -2011,8 +1994,9 @@ public sealed class DashboardViewModel : ObservableObject
     /// </summary>
     private void ApplyLiveCoreView(IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
-        for (var i = 0; i < snapshots.Count && i < _allCores.Count; i++)
-            _allCores[i].ApplyLive(snapshots[i]);
+        foreach (var sample in snapshots)
+            if (_allCoresById.TryGetValue(sample.Id, out var core))
+                core.ApplyLive(sample);
 
 
         foreach (var group in CoreGroups)
@@ -2033,7 +2017,7 @@ public sealed class DashboardViewModel : ObservableObject
     /// </summary>
     private void ApplyCumulativeCoreView(IReadOnlyList<CpuCoreSnapshot> snapshots)
     {
-        var order = BuildHystereticOrder();
+        var order = BuildCumulativeOrder();
         if (order.Count == 0)
             return;
 
@@ -2041,11 +2025,10 @@ public sealed class DashboardViewModel : ObservableObject
         for (var i = 0; i < order.Count; i++)
             rankById[order[i].Id] = i + 1;
 
-        for (var i = 0; i < snapshots.Count && i < _allCores.Count; i++)
+        foreach (var sample in snapshots)
         {
-            var vm = _allCores[i];
-            var rank = rankById.TryGetValue(vm.Id, out var value) ? value : i + 1;
-            vm.ApplyCumulative(snapshots[i], _cumulative, rank, order.Count);
+            if (_allCoresById.TryGetValue(sample.Id, out var vm))
+                vm.ApplyCumulative(sample, _cumulative, rankById[vm.Id], order.Count);
         }
 
         foreach (var group in CoreGroups)
@@ -2061,44 +2044,13 @@ public sealed class DashboardViewModel : ObservableObject
         ApplyBoardStage();
     }
 
-    /// <summary>
-    /// 按累积均值降序生成全局显示序，并在上一次顺序上做**滞回**：
-    /// 相邻两核的累积均值差距不足 <see cref="RankHysteresis"/> 个百分点就不换位。
-    /// <para>
-    /// 换位会重建该分区的 ItemContainer（新 SegmentBar 从 0 动画到目标值），
-    /// 若均值接近的核每帧互换，界面会持续闪动且白白消耗 CPU。
-    /// 实现用相邻冒泡而非 OrderBy：冒泡天然以"上一帧顺序"为基序，滞回阈值直接作用于相邻比较。
-    /// </para>
-    /// </summary>
-    private List<DashboardCoreVm> BuildHystereticOrder()
+    /// <summary>均值严格降序；同值沿用自然核序，未取得有效读数的核排在最后。</summary>
+    private List<DashboardCoreVm> BuildCumulativeOrder()
     {
-        // 核数变化（首次进入 / 平台或线程数改变）→ 丢弃旧基序，退回自然序重新收敛。
-        if (_displayOrder.Count != _allCores.Count)
-        {
-            _displayOrder.Clear();
-            _displayOrder.AddRange(_allCores);
-        }
-
-        var list = _displayOrder;
-        var swapped = true;
-
-        while (swapped)
-        {
-            swapped = false;
-            for (var i = 0; i + 1 < list.Count; i++)
-            {
-                var ahead = _cumulative.AveragePercent(list[i].Id);
-                var behind = _cumulative.AveragePercent(list[i + 1].Id);
-
-                if (behind - ahead <= RankHysteresis)
-                    continue;
-
-                (list[i], list[i + 1]) = (list[i + 1], list[i]);
-                swapped = true;
-            }
-        }
-
-        return list;
+        _displayOrder.Clear();
+        _displayOrder.AddRange(_allCores.OrderByDescending(core =>
+            _cumulative.ValidSeconds(core.Id) > 0 ? _cumulative.AveragePercent(core.Id) : -1));
+        return _displayOrder;
     }
 
     /// <summary>
@@ -2116,7 +2068,7 @@ public sealed class DashboardViewModel : ObservableObject
     /// <para>
     /// 必须取 <see cref="CumulativeLoadTracker.ObservedSeconds"/>，不能用 <see cref="UptimeText"/>：
     /// 断点保护会跳过休眠间隔（既不进分子也不进分母），二者在发生挂起后不再相等。
-    /// 用 UptimeText 会让界面声称统计了 1 小时、而实际归一化分母只有 55 分钟 ——
+    /// 用 UptimeText 会让界面声称统计了 1 小时、而实际统计窗口只有 55 分钟 ——
     /// 正是本项目反复踩到的「界面看着正常、数据是错的」那类静默偏差。
     /// </para>
     /// </summary>
@@ -2144,9 +2096,7 @@ public sealed class DashboardViewModel : ObservableObject
     /// Tooltip 里，否则用户会把部分时段的结果当成全程结果来读。
     /// </para>
     /// <para>
-    /// 两路共用同一份统计窗口与覆盖率（<see cref="AccumulateSample"/> 保证两路同起同停），
-    /// 因此这里只求一次 <c>coverage</c>；若哪天两路覆盖率出现分叉，那一定是积分闸出了问题，
-    /// 而不是本方法算错。
+    /// 两路共享采样时间轴；整机估算还会拒绝越界结果，故覆盖率各按自身有效时长计算。
     /// </para>
     /// </summary>
     private void UpdateEnergyReadout()
@@ -2182,7 +2132,7 @@ public sealed class DashboardViewModel : ObservableObject
         EnergyText = CumulativeEnergyTracker.FormatEnergy(_energy.Joules);
 
         // 「≈」是数值语义的一部分，不是装饰：估算量必须与实测量在视觉上分得开。
-        SystemEnergyText = "≈ " + CumulativeEnergyTracker.FormatEnergy(totalJoules);
+        SystemEnergyText = totalJoules > 0 ? "≈ " + CumulativeEnergyTracker.FormatEnergy(totalJoules) : "-";
 
         var window = TimeSpan.FromSeconds(_energy.ObservedSeconds);
         var coverage = _cumulative.ObservedSeconds > 0
@@ -2195,15 +2145,44 @@ public sealed class DashboardViewModel : ObservableObject
             $"运行期累计 CPU 封装能耗\n统计 {span}"
             + $" · 覆盖 {coverage:0}%\n平均功率 {FmtValueUnit(_energy.AverageWatt, "0", "W")}";
 
-        // 悬浮只留关键信息（v1.27.1 精简）：本次 / 累计 / 一行口径声明。
-        // 逐部件构成、键名清单等长解释全部移除 —— 那是排查问题时才需要的内容。
+        var systemWindow = TimeSpan.FromSeconds(_systemEnergy.ObservedSeconds);
+        var systemSpan = $"{(int)systemWindow.TotalHours}:{systemWindow.Minutes:00}:{systemWindow.Seconds:00}";
+        var systemCoverage = _cumulative.ObservedSeconds > 0
+            ? Math.Min(100, _systemEnergy.ObservedSeconds / _cumulative.ObservedSeconds * 100) : 0;
         var ledgerHours = TimeSpan.FromSeconds(_energyLedger.TotalSeconds()).TotalHours;
         SystemEnergyHintText =
             $"本次运行 ≈ {CumulativeEnergyTracker.FormatEnergy(sessionJoules)}"
-            + $"（均值 {FmtValueUnit(_systemEnergy.AverageWatt, "0", "W")} · 统计 {span}）"
+            + $"（均值 {FmtValueUnit(_systemEnergy.AverageWatt, "0", "W")} · 统计 {systemSpan} · 覆盖 {systemCoverage:0}%）"
             + $"\n累计 ≈ {CumulativeEnergyTracker.FormatEnergy(totalJoules)}"
             + $"（账本 {_energyLedger.DayCount} 天 · 观测 {ledgerHours:0.0} 小时）"
-            + "\n整机为逐部件估算（非实测），系数可在 settings.json 校准";
+            + "\n部件直流估算，不含电源转换损耗、显示器与外接设备；非插座实测";
+        if (_systemBreakdown.IsUsable)
+        {
+            var part = _systemBreakdown;
+            var gpuSource = part.GpuSource switch
+            {
+                GpuPowerSource.Measured => "传感器",
+                GpuPowerSource.Mixed => "部分传感器 + 部分估算",
+                GpuPowerSource.RatedByModel => "型号估算",
+                GpuPowerSource.IntegratedInPackage => "含在 CPU 封装内",
+                _ => "未识别，未计入",
+            };
+            SystemEnergyHintText += $"\n当前 ≈ {part.TotalWatt:0} W；CPU {part.CpuWatt:0.0} W（传感器）"
+                + $"\n显卡 {part.GpuWatt:0.0} W（{gpuSource}）；内存 {part.MemoryWatt:0.0} W（容量基线）"
+                + $"\n存储 {part.StorageWatt:0.0} W；主板 {part.BoardWatt:0.0} W；已识别风扇 {part.FanWatt:0.0} W（估算）";
+            if (part.GpuSource is GpuPowerSource.RatedByModel or GpuPowerSource.Mixed
+                && _systemInputs is { } inputs
+                && (inputs.DiscreteGpuReadings.Count > 0
+                    ? inputs.DiscreteGpuReadings.Any(g => g.LoadPercent is null || !double.IsFinite(g.LoadPercent.Value))
+                    : inputs.GpuLoadPercent is null))
+                SystemEnergyHintText += "\n显卡负载缺失项按空闲至满载中值估算，误差可能较大";
+            var calibration = SystemPowerEstimator.NormalizeCalibration(_settings.SystemPowerCalibration);
+            if (calibration != 1) SystemEnergyHintText += $"\n总量已乘校准系数 {calibration:0.###}；分项为校准前功率";
+        }
+        else
+        {
+            SystemEnergyHintText += "\n当前读数不可用，累计已暂停";
+        }
     }
 
     /// <summary>

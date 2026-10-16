@@ -76,7 +76,7 @@ public static class CoreRoleStore
             if (!File.Exists(FilePath))
                 return (result, CaliberId);
 
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            using var document = JsonDocument.Parse(JsonFile.ReadAllText(FilePath));
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return (result, CaliberId);
@@ -122,15 +122,17 @@ public static class CoreRoleStore
             foreach (var pair in cores)
                 serializable[pair.Key] = CoreRoleRecord.FromEntry(pair.Value);
 
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(new CoreRoleFile
+            JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(new CoreRoleFile
             {
                 Caliber = CaliberId,
                 Cores = serializable,
             }, JsonOptions));
+            CoreRoleStoreTrace.LastSaveError = null;
         }
         catch (Exception ex)
         {
             CoreRoleStoreTrace.LastSaveError = $"{ex.GetType().Name}: {ex.Message}";
+            AppLog.Write("role save", ex);
         }
     }
 
@@ -159,15 +161,7 @@ public static class CoreRoleStore
     }
 
 
-    /// <summary>
-    /// 把本次运行的统计量并入跨进程账本（各项<em>取 max</em>，而非相加）。
-    /// </summary>
-    /// <remarks>
-    /// 取 max 的理由：累加器覆盖「上次落盘之后」这一段，账本覆盖「之前」，
-    /// 两者区间不重叠，正常情况下不会重复；但一旦某个值因异常被读了两遍，
-    /// max 是幂等的，而相加会把错误放大。若两者确实各自推进（跨零点重置等），
-    /// 累加器里的值会更大，max 自然取到它。
-    /// </remarks>
+    /// <summary>将完整累计快照并入账本，取 max 保证重复刷新不重复计数。</summary>
     public static void Merge(
         Dictionary<string, CoreRoleEntry> ledger, string id, CoreRoleStats stats)
     {

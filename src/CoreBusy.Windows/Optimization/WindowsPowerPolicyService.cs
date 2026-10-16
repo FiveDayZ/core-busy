@@ -66,20 +66,64 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         }
     }
 
-    private static string BackupPath => Path.Combine(DirectoryPath, "power-backup.json");
+    private readonly bool _temporary;
+    private string BackupPath => Path.Combine(DirectoryPath, _temporary ? "power-game-backup.json" : "power-backup.json");
 
-    public bool HasBackup => File.Exists(BackupPath);
+    private readonly Func<Guid?> _currentScheme;
+    private readonly Func<string, bool, Guid, int?> _read;
+    private readonly Func<string, int, bool, Guid, bool> _write;
+    private readonly Func<Guid, bool> _activate;
+    private static readonly string[] SettingGuids = [CoreParkingMinGuid, EppGuid, ProcessorMaxGuid];
+
+    public WindowsPowerPolicyService() : this(
+        () => TryGetActiveScheme(out var scheme) ? scheme : null,
+        ReadValue, WriteWithUnhide,
+        scheme => { var id = scheme; return PowerSetActiveScheme(IntPtr.Zero, ref id) == 0; }) { }
+
+    // 将原生调用边界注入测试，回归不改动实际系统电源方案。
+    internal WindowsPowerPolicyService(Func<Guid?> currentScheme,
+        Func<string, bool, Guid, int?> read,
+        Func<string, int, bool, Guid, bool> write, Func<Guid, bool> activate, bool temporary = false)
+    {
+        _currentScheme = currentScheme; _read = read; _write = write; _activate = activate; _temporary = temporary;
+    }
+
+    public bool HasBackup
+    {
+        get { try { return LoadBackups().Schemes.Count > 0 || (!_temporary && TemporaryService().HasBackup); } catch { return false; } }
+    }
+
+    private WindowsPowerPolicyService TemporaryService() => new(_currentScheme, _read, _write, _activate, temporary: true);
+    public bool ApplyTemporary(PowerPreset preset, out string error) => TemporaryService().Apply(preset, out error);
+    public bool HasTemporaryBackup
+    {
+        get { try { return TemporaryService().LoadBackups().Schemes.Count > 0; } catch { return true; } }
+    }
+    public bool RestoreTemporary(out string error)
+    {
+        var temporary = TemporaryService();
+        try
+        {
+            if (temporary.LoadBackups().Schemes.Count == 0) { error = ""; return true; }
+            return temporary.Restore(out error);
+        }
+        catch (Exception ex) { error = ex.Message; return false; }
+    }
+    public void DiscardTemporaryBackup()
+    {
+        try { File.Delete(TemporaryService().BackupPath); } catch { /* 不影响固定策略或程序退出。 */ }
+    }
 
     public PowerPolicyState Read()
     {
-        if (!TryGetActiveScheme(out var scheme))
+        if (_currentScheme() is not { } scheme)
         {
             return new PowerPolicyState(false, null, null, null, HasBackup, "读取当前电源方案失败");
         }
 
-        var parking = ReadValue(CoreParkingMinGuid, dc: false, scheme);
-        var epp = ReadValue(EppGuid, dc: false, scheme);
-        var maxState = ReadValue(ProcessorMaxGuid, dc: false, scheme);
+        var parking = _read(CoreParkingMinGuid, false, scheme);
+        var epp = _read(EppGuid, false, scheme);
+        var maxState = _read(ProcessorMaxGuid, false, scheme);
 
         var available = parking is not null || epp is not null || maxState is not null;
         var detail = available
@@ -93,100 +137,102 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
 
     public bool Apply(PowerPreset preset, out string error)
     {
-        error = string.Empty;
-
-        if (preset == PowerPreset.None)
+        error = "";
+        if (preset is not (PowerPreset.Performance or PowerPreset.Saver))
         {
-            error = "未指定预设";
+            error = "未指定有效预设";
             return false;
         }
-
-        if (!TryGetActiveScheme(out var scheme))
+        if (_currentScheme() is not { } scheme)
         {
             error = "无法解析当前电源方案";
             return false;
         }
-
-        // 备份必须在任何写操作之前落盘，且只在首次写入。
-        if (!SaveBackupIfAbsent(scheme, out var backupError))
+        PowerBackup? before = null;
+        var writesStarted = false;
+        PowerBackupFile? backups = null;
+        string? previousTarget = null;
+        var addedBackup = false;
+        void RestoreBackupIndex()
         {
-            error = $"备份当前电源方案失败，已中止改动：{backupError}";
+            if (backups is null) return;
+            if (addedBackup) backups.Schemes.Remove(scheme.ToString());
+            backups.LastAppliedScheme = previousTarget;
+            SaveBackups(backups);
+        }
+        try
+        {
+            backups = LoadBackups();
+            previousTarget = backups.LastAppliedScheme;
+            before = Capture(scheme); // 六项完整读取成功后才允许写入。
+            var key = scheme.ToString();
+            // 游戏中首次应用固定策略，原始值来自进入游戏前的备份。
+            var original = !_temporary && TemporaryService().LoadBackups().Schemes.TryGetValue(key, out var temporaryOriginal)
+                ? temporaryOriginal : before;
+            addedBackup = backups.Schemes.TryAdd(key, original);
+            backups.LastAppliedScheme = key;
+            SaveBackups(backups); // 原子保存，每个方案各自保留原值。
+            writesStarted = true;
+            var values = preset == PowerPreset.Performance ? new[] { 100, 0, 100 } : new[] { 10, 100, 80 };
+            var ok = true;
+            for (var i = 0; i < SettingGuids.Length; i++)
+                foreach (var dc in new[] { false, true })
+                    ok &= _write(SettingGuids[i], values[i], dc, scheme);
+            ok &= ActivateIfCurrent(scheme);
+            if (ok)
+            {
+                // 只有明确且成功应用固定策略才移交所有权；失败则保留临时恢复依据。
+                if (!_temporary) File.Delete(TemporaryService().BackupPath);
+                return true;
+            }
+            var rolledBack = WriteBackup(before);
+            if (rolledBack) RestoreBackupIndex();
+            error = rolledBack ? "预设未能完整应用，已撤销本次改动" : "预设应用和回滚未完整成功，请使用已保留的备份还原";
             return false;
         }
-
-        // 性能优先：解除核心停放 + EPP 拉满性能 + 处理器状态不设上限。
-        // 节能优先：恢复动态停放 + EPP 偏向节能 + 处理器状态封顶 80%。
-        var (parking, epp, maxState) = preset == PowerPreset.Performance
-            ? (100, 0, 100)
-            : (10, 100, 80);
-
-        var failures = new List<string>();
-
-        // PERFEPP / CPMINCORES 在多数系统上处于"隐藏"状态；隐藏只影响控制面板可见性，
-        // 不阻止 API 写入，但少数 OEM 镜像会连带拒绝。失败时先解除隐藏（Attributes=0）再试一次。
-        if (!TryWriteWithUnhide(CoreParkingMinGuid, parking, scheme, out var parkingError))
-            failures.Add($"核心停放({parkingError})");
-
-        if (!TryWriteWithUnhide(EppGuid, epp, scheme, out var eppError))
-            failures.Add($"EPP({eppError})");
-
-        if (!TryWriteWithUnhide(ProcessorMaxGuid, maxState, scheme, out var maxError))
-            failures.Add($"处理器最大状态({maxError})");
-
-        Activate(scheme);
-
-        var state = Read();
-
-        if (failures.Count > 0)
+        catch (Exception ex)
         {
-            error = $"部分设置未能应用：{string.Join("、", failures)}（备份已保留，可还原）";
+            var restored = false;
+            if (writesStarted && before is not null)
+                try { restored = WriteBackup(before); if (restored) RestoreBackupIndex(); } catch { }
+            error = "电源策略未完成：" + ex.Message
+                + (writesStarted ? restored ? "；已撤销本次改动" : "；请使用已保留的备份还原" : "；未写入系统参数");
             return false;
         }
-
-        return true;
     }
 
     public bool Restore(out string error)
     {
-        error = string.Empty;
-
-        if (!TryGetActiveScheme(out var scheme))
+        if (!_temporary && TemporaryService().HasBackup) return RestoreTemporary(out error);
+        error = "";
+        try
         {
-            error = "无法解析当前电源方案";
-            return false;
+            var backups = LoadBackups();
+            if (backups.LastAppliedScheme is not { } key || !backups.Schemes.TryGetValue(key, out var backup))
+                throw new InvalidOperationException("尚无可还原的电源备份");
+            Validate(backup);
+            if (!WriteBackup(backup))
+                throw new IOException("部分参数未能还原，备份已保留");
+            backups.Schemes.Remove(key);
+            backups.LastAppliedScheme = backups.Schemes.OrderByDescending(p => p.Value.SavedAt).Select(p => p.Key).FirstOrDefault();
+            SaveBackups(backups);
+            return true;
         }
+        catch (Exception ex) { error = ex.Message; return false; }
+    }
 
-        if (!TryLoadBackup(out var backup, out var loadError))
+    private bool ActivateIfCurrent(Guid scheme) => _currentScheme() != scheme || _activate(scheme);
+
+    private bool WriteBackup(PowerBackup backup)
+    {
+        var scheme = Guid.Parse(backup.Scheme);
+        var ok = true;
+        foreach (var setting in SettingGuids)
         {
-            error = loadError;
-            return false;
+            ok &= _write(setting, backup.Ac[setting], false, scheme);
+            ok &= _write(setting, backup.Dc[setting], true, scheme);
         }
-
-        var failures = new List<string>();
-
-        foreach (var (guid, label) in new[]
-                 {
-                     (CoreParkingMinGuid, "核心停放"),
-                     (EppGuid, "EPP"),
-                     (ProcessorMaxGuid, "处理器最大状态"),
-                 })
-        {
-            if (backup.Ac.TryGetValue(guid, out var ac) && !TryWrite(guid, ac, dc: false, scheme))
-                failures.Add($"{label}(AC)");
-
-            if (backup.Dc.TryGetValue(guid, out var dc) && !TryWrite(guid, dc, dc: true, scheme))
-                failures.Add($"{label}(DC)");
-        }
-
-        Activate(scheme);
-
-        if (failures.Count > 0)
-        {
-            error = $"还原时部分设置失败：{string.Join("、", failures)}";
-            return false;
-        }
-
-        return true;
+        return ActivateIfCurrent(scheme) && ok;
     }
 
     // ===== 读 =====
@@ -237,141 +283,82 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
         return status == 0;
     }
 
-    /// <summary>同时写 AC/DC；任一失败则解除隐藏标记后整组重试一次。</summary>
-    private static bool TryWriteWithUnhide(string settingGuid, int value, Guid scheme, out string error)
-    {
-        error = string.Empty;
+    private static bool WriteWithUnhide(string setting, int value, bool dc, Guid scheme)
+        => TryWrite(setting, value, dc, scheme) || (TryUnhide(setting) && TryWrite(setting, value, dc, scheme));
 
-        var acOk = TryWrite(settingGuid, value, dc: false, scheme, out var acStatus);
-        var dcOk = TryWrite(settingGuid, value, dc: true, scheme, out var dcStatus);
-
-        if (acOk && dcOk)
-            return true;
-
-        if (TryUnhide(settingGuid))
-        {
-            acOk |= TryWrite(settingGuid, value, dc: false, scheme, out acStatus);
-            dcOk |= TryWrite(settingGuid, value, dc: true, scheme, out dcStatus);
-        }
-
-        if (acOk && dcOk)
-            return true;
-
-        error = $"AC={StatusText(acStatus)} DC={StatusText(dcStatus)}";
-        return false;
-    }
-
-    /// <summary>
-    /// 让电源方案重新生效。PowerWrite*ValueIndex 只改方案存储，
-    /// 不再 setactive 一次的话新值要等用户手动切方案才会生效。
-    /// </summary>
-    private static void Activate(Guid scheme)
-    {
-        var schemeGuid = scheme;
-        _ = PowerSetActiveScheme(IntPtr.Zero, ref schemeGuid);
-    }
-
-    /// <summary>解除设置项的隐藏标记（Attributes=0）。</summary>
     private static bool TryUnhide(string settingGuid)
     {
         try
         {
-            var keyPath = $@"SYSTEM\CurrentControlSet\Control\Power\PowerSettings\{SubProcessorGroup}\{settingGuid}";
-            using var key = Registry.LocalMachine.OpenSubKey(keyPath, writable: true);
-            if (key is null)
-                return false;
-
+            using var key = Registry.LocalMachine.OpenSubKey(
+                $@"SYSTEM\CurrentControlSet\Control\Power\PowerSettings\{SubProcessorGroup}\{settingGuid}", writable: true);
+            if (key is null) return false;
             key.SetValue("Attributes", 0, RegistryValueKind.DWord);
             return true;
         }
-        catch (Exception)
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
-    private static string StatusText(uint status) => status switch
+    // ===== 按方案保存备份；兼容原先单方案文件 =====
+    private PowerBackup Capture(Guid scheme)
     {
-        0 => "ok",
-        5 => "拒绝访问(需管理员)",
-        87 => "参数无效",
-        _ => $"0x{status:X}",
-    };
+        var backup = new PowerBackup { Scheme = scheme.ToString(), SavedAt = DateTime.Now };
+        foreach (var setting in SettingGuids)
+        {
+            backup.Ac[setting] = _read(setting, false, scheme) ?? throw new IOException("交流电源参数不可读");
+            backup.Dc[setting] = _read(setting, true, scheme) ?? throw new IOException("电池电源参数不可读");
+        }
+        Validate(backup);
+        return backup;
+    }
 
-    // ===== 备份 =====
-
-    /// <summary>
-    /// 首次应用时记录原始值。**已存在则不改写** —— 见类注释中关于原始状态丢失的说明。
-    /// </summary>
-    private static bool SaveBackupIfAbsent(Guid scheme, out string error)
+    private static void Validate(PowerBackup backup)
     {
-        error = string.Empty;
+        if (!Guid.TryParse(backup.Scheme, out _)) throw new IOException("电源备份方案 GUID 无效");
+        foreach (var setting in SettingGuids)
+            if (!backup.Ac.TryGetValue(setting, out var ac) || ac is < 0 or > 100
+                || !backup.Dc.TryGetValue(setting, out var dc) || dc is < 0 or > 100)
+                throw new IOException("电源备份不完整，已拒绝写入");
+    }
 
-        if (File.Exists(BackupPath))
-            return true;
+    private PowerBackupFile LoadBackups()
+    {
+        if (!File.Exists(BackupPath)) return new();
+        var text = File.ReadAllText(BackupPath);
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.TryGetProperty("Scheme", out _))
+        {
+            var legacy = JsonSerializer.Deserialize<PowerBackup>(text) ?? throw new IOException("电源备份为空");
+            Validate(legacy);
+            return new() { LastAppliedScheme = legacy.Scheme, Schemes = new() { [legacy.Scheme] = legacy } };
+        }
+        var file = JsonSerializer.Deserialize<PowerBackupFile>(text) ?? throw new IOException("电源备份为空");
+        foreach (var pair in file.Schemes)
+        {
+            Validate(pair.Value);
+            if (pair.Key != pair.Value.Scheme) throw new IOException("电源备份方案索引不一致");
+        }
+        if (file.Schemes.Count > 0 && (file.LastAppliedScheme is null || !file.Schemes.ContainsKey(file.LastAppliedScheme)))
+            throw new IOException("电源备份缺少还原目标");
+        return file;
+    }
 
+    private void SaveBackups(PowerBackupFile file)
+    {
+        Directory.CreateDirectory(DirectoryPath);
+        var temporary = BackupPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            var backup = new PowerBackup
-            {
-                SavedAt = DateTime.Now,
-                Scheme = scheme.ToString(),
-                Ac = CaptureAll(dc: false, scheme),
-                Dc = CaptureAll(dc: true, scheme),
-            };
-
-            Directory.CreateDirectory(DirectoryPath);
-            File.WriteAllText(BackupPath, JsonSerializer.Serialize(backup, JsonOptions));
-            return true;
+            File.WriteAllText(temporary, JsonSerializer.Serialize(file, JsonOptions));
+            File.Move(temporary, BackupPath, overwrite: true);
         }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private static Dictionary<string, int> CaptureAll(bool dc, Guid scheme)
+    private sealed class PowerBackupFile
     {
-        var result = new Dictionary<string, int>();
-        foreach (var guid in new[] { CoreParkingMinGuid, EppGuid, ProcessorMaxGuid })
-        {
-            var value = ReadValue(guid, dc, scheme);
-            if (value is not null)
-                result[guid] = value.Value;
-        }
-
-        return result;
-    }
-
-    private static bool TryLoadBackup(out PowerBackup backup, out string error)
-    {
-        backup = new PowerBackup();
-        error = string.Empty;
-
-        if (!File.Exists(BackupPath))
-        {
-            error = "尚未备份过电源方案，无可还原的内容";
-            return false;
-        }
-
-        try
-        {
-            var loaded = JsonSerializer.Deserialize<PowerBackup>(File.ReadAllText(BackupPath));
-            if (loaded is null)
-            {
-                error = "备份文件内容为空";
-                return false;
-            }
-
-            backup = loaded;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = $"备份文件解析失败：{ex.Message}";
-            return false;
-        }
+        public string? LastAppliedScheme { get; set; }
+        public Dictionary<string, PowerBackup> Schemes { get; set; } = [];
     }
 
     private static Guid ParseGuid(string value) => new(value);
@@ -453,7 +440,7 @@ public sealed class WindowsPowerPolicyService : IPowerPolicyService
     {
         public DateTime SavedAt { get; set; }
 
-        /// <summary>备份时的活动方案 GUID（仅作留痕，还原时不依赖它）。</summary>
+        /// <summary>备份对应的方案 GUID；只写回此方案，不污染当前其他方案。</summary>
         public string Scheme { get; set; } = string.Empty;
 
         public Dictionary<string, int> Ac { get; set; } = [];

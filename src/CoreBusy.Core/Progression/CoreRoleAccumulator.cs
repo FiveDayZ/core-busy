@@ -51,7 +51,7 @@ public sealed class CoreRoleAccumulator
     public void Accumulate(
         IReadOnlyList<CpuCoreSnapshot> snapshots, double deltaSeconds, DateTime now)
     {
-        if (double.IsNaN(deltaSeconds) || deltaSeconds <= 0 || snapshots.Count == 0)
+        if (!double.IsFinite(deltaSeconds) || deltaSeconds <= 0 || snapshots.Count == 0)
             return;
 
         foreach (var core in snapshots)
@@ -59,21 +59,19 @@ public sealed class CoreRoleAccumulator
             if (string.IsNullOrEmpty(core.Id))
                 continue;
 
+            var usage = core.UsagePercent;
+            if (!double.IsFinite(usage) || usage is < 0 or > 100)
+                continue;
             Add(_observed, core.Id, deltaSeconds / 60.0);
 
-            var usage = core.UsagePercent;
-            // NaN（读不到）不参与任何统计 —— 不拿 0 冒充"真的空闲"。
-            if (!double.IsNaN(usage))
-            {
-                var (load, loadSquared, dayLoad, nightLoad) = SplitByDayNight(usage, deltaSeconds, now);
-                Add(_load, core.Id, load);
-                Add(_loadSquared, core.Id, loadSquared);
-                Add(_dayLoad, core.Id, dayLoad);
-                Add(_nightLoad, core.Id, nightLoad);
+            var (load, loadSquared, dayLoad, nightLoad) = SplitByDayNight(usage, deltaSeconds, now);
+            Add(_load, core.Id, load);
+            Add(_loadSquared, core.Id, loadSquared);
+            Add(_dayLoad, core.Id, dayLoad);
+            Add(_nightLoad, core.Id, nightLoad);
 
-                if (usage > PeakOf(core.Id))
-                    _peak[core.Id] = usage;
-            }
+            if (usage > PeakOf(core.Id))
+                _peak[core.Id] = usage;
         }
     }
 

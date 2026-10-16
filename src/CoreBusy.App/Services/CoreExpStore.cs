@@ -27,8 +27,11 @@ public sealed class CoreExpEntry
     /// <summary>累计负荷经验（核·分）。</summary>
     public double LoadCoreMinutes { get; set; }
 
-    /// <summary>累计陪伴兜底（核·分）。与 <see cref="LoadCoreMinutes"/> 取max 才是实际 EXP。</summary>
+    /// <summary>累计陪伴兜底（核·分）。保留原始统计，实际经验由逐段授奖量决定。</summary>
     public double FloorCoreMinutes { get; set; }
+
+    /// <summary>逐区间累计的实际授奖量。缺省表示旧账本，使用旧 max 余额兼容。</summary>
+    public double? AwardedCoreMinutes { get; set; }
 
     /// <summary>历史最高占用率（0-100）。从未观测到有效值时为 <see cref="double.NaN"/>。</summary>
     public double PeakPercent { get; set; } = double.NaN;
@@ -43,11 +46,17 @@ public sealed class CoreExpEntry
     /// <summary>累计获得过升级的次数（即曾抵达的等级数，1 起）。</summary>
     public int TotalLevels { get; set; } = 1;
 
-    /// <summary>实际累计 EXP（核·分）= max(负荷, 兜底)。</summary>
-    public double ExpCoreMinutes =>
-        double.IsNaN(LoadCoreMinutes) || double.IsNaN(FloorCoreMinutes)
-            ? 0.0
-            : Math.Max(LoadCoreMinutes, FloorCoreMinutes);
+    /// <summary>已授经验；旧账本保留原有 max 余额，绝不反推并虚增历史奖励。</summary>
+    public double ExpCoreMinutes
+    {
+        get
+        {
+            var legacy = double.IsFinite(LoadCoreMinutes) && double.IsFinite(FloorCoreMinutes)
+                ? Math.Max(0, Math.Max(LoadCoreMinutes, FloorCoreMinutes)) : 0;
+            return AwardedCoreMinutes is double awarded && double.IsFinite(awarded)
+                ? Math.Max(legacy, awarded) : legacy;
+        }
+    }
 
     /// <summary>当前等级。</summary>
     public int Level => CoreLevelCurve.LevelOf(ExpCoreMinutes);
@@ -101,7 +110,7 @@ public static class CoreExpStore
             if (!File.Exists(FilePath))
                 return (result, CoreExpCaliber.CaliberId);
 
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            using var document = JsonDocument.Parse(JsonFile.ReadAllText(FilePath));
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return (result, CoreExpCaliber.CaliberId);
@@ -145,40 +154,44 @@ public static class CoreExpStore
     /// 本机 <c>core-exp.json</c> 实证：<c>totalLevels=8</c>（曾达 Lv.8，只升不降的高水位）
     /// 而 EXP 只够 Lv.5，即 EXP 曾从 ≥126.7 核·分回退到 65.9。
     /// 修复后写盘前先把盘上现有账本读回、逐核逐字段取有效最大值：
-    /// 无论多少个实例并发写，账本都只会单调抬升，后写者不再能带着旧快照开倒车。
+    /// 按文件路径串行化读、合并和原子替换，避免并发写入把旧快照覆盖回去。
     /// </para>
     /// </remarks>
     public static void Save(IReadOnlyDictionary<string, CoreExpEntry> cores)
     {
         try
         {
-            Directory.CreateDirectory(EnergyHistoryStore.DataDirectory);
-
-            // 合并的宿主是调用方账本本身的副本语义：MergeInto 只会把字段抬到
-            // 「内存值与盘值的较大者」，正常运行时盘值 ≤ 内存值，等于零改动。
-            var merged = new Dictionary<string, CoreExpEntry>(cores.Count, StringComparer.Ordinal);
-            foreach (var pair in cores)
-                merged[pair.Key] = pair.Value;
-
-            foreach (var pair in TryLoadForMerge())
+            JsonFile.WithLock(FilePath, () =>
             {
-                if (merged.TryGetValue(pair.Key, out var mine))
-                    MergeInto(mine, pair.Value);
-                else
+                Directory.CreateDirectory(EnergyHistoryStore.DataDirectory);
+
+                // 合并的宿主是调用方账本本身的副本语义：MergeInto 只会把字段抬到
+                // 「内存值与盘值的较大者」，正常运行时盘值 ≤ 内存值，等于零改动。
+                var merged = new Dictionary<string, CoreExpEntry>(cores.Count, StringComparer.Ordinal);
+                foreach (var pair in cores)
                     merged[pair.Key] = pair.Value;
-            }
 
-            var serializable = new Dictionary<string, CoreExpRecord>(merged.Count, StringComparer.Ordinal);
-            foreach (var pair in merged)
-                serializable[pair.Key] = CoreExpRecord.FromEntry(pair.Value);
+                foreach (var pair in TryLoadForMerge())
+                {
+                    if (merged.TryGetValue(pair.Key, out var mine))
+                        MergeInto(mine, pair.Value);
+                    else
+                        merged[pair.Key] = pair.Value;
+                }
 
-            // Caliber 声明在最前：人工翻这个文件时，第一眼就能看出这些数字是哪个口径的量。
-            var payload = new CoreExpFile
-            {
-                Caliber = CoreExpCaliber.CaliberId,
-                Cores = serializable,
-            };
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
+                var serializable = new Dictionary<string, CoreExpRecord>(merged.Count, StringComparer.Ordinal);
+                foreach (var pair in merged)
+                    serializable[pair.Key] = CoreExpRecord.FromEntry(pair.Value);
+
+                // Caliber 声明在最前：人工翻这个文件时，第一眼就能看出这些数字是哪个口径的量。
+                var payload = new CoreExpFile
+                {
+                    Caliber = CoreExpCaliber.CaliberId,
+                    Cores = serializable,
+                };
+                JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
+            });
+            CoreExpStoreTrace.LastSaveError = null;
         }
         catch (Exception ex)
         {
@@ -186,6 +199,7 @@ public static class CoreExpStore
             //「账本根本没落盘」这件事完全不可见 —— 实现期实测到过一次（序列器拒绝 NaN），
             // 若不是取证脚本逐环节复现，这个 bug 会被带进发布版。
             CoreExpStoreTrace.LastSaveError = $"{ex.GetType().Name}: {ex.Message}";
+            AppLog.Write("EXP save", ex);
         }
     }
 
@@ -205,7 +219,7 @@ public static class CoreExpStore
             if (!File.Exists(FilePath))
                 return result;
 
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            using var document = JsonDocument.Parse(JsonFile.ReadAllText(FilePath));
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return result;
@@ -239,6 +253,7 @@ public static class CoreExpStore
     /// <summary>把盘上条目并入内存条目：读数类字段逐项取有效最大值（账本因此只升不降）。</summary>
     private static void MergeInto(CoreExpEntry mine, CoreExpEntry disk)
     {
+        mine.AwardedCoreMinutes = Math.Max(mine.ExpCoreMinutes, disk.ExpCoreMinutes);
         mine.LoadCoreMinutes = MaxNat(mine.LoadCoreMinutes, disk.LoadCoreMinutes);
         mine.FloorCoreMinutes = MaxNat(mine.FloorCoreMinutes, disk.FloorCoreMinutes);
         mine.PeakPercent = MaxNat(mine.PeakPercent, disk.PeakPercent);
@@ -276,9 +291,8 @@ public static class CoreExpStore
     /// <remarks>
     /// <b>只恢复到门槛，绝不虚增。</b>TotalLevels 是落盘的等级高水位，属已确证证据；
     /// 但它在当级内的真实进度无从考证，取本级门槛是保守下界（LevelOf 只会 ≥ TotalLevels，
-    /// 因此修复幂等，不会在每次启动时反复加码）。等级曲线自 v1.22.0 引入后从未重新标定
-    /// （git 取证：CoreLevelCurve.cs 仅一个提交），「曾达 Lv.8」在新旧曲线下语义一致，
-    /// 不存在跨口径误修复。
+    /// 因此修复幂等，不会在每次启动时反复加码）。一年配速曲线的各级阈值更低，
+    /// 已有经验完整保留，旧等级高水位仍是有效下界。
     /// </remarks>
     private static CoreExpEntry RepairEntry(CoreExpEntry entry)
     {
@@ -373,6 +387,9 @@ public static class CoreExpStore
         [JsonPropertyName("floorCoreMinutes")]
         public double FloorCoreMinutes { get; set; }
 
+        [JsonPropertyName("awardedCoreMinutes")]
+        public double? AwardedCoreMinutes { get; set; }
+
         /// <summary>null = 从未观测到有效值（回读为 NaN，绝不按 0 处理）。</summary>
         [JsonPropertyName("peakPercent")]
         public string? PeakPercent { get; set; }
@@ -392,6 +409,7 @@ public static class CoreExpStore
         {
             LoadCoreMinutes = e.LoadCoreMinutes,
             FloorCoreMinutes = e.FloorCoreMinutes,
+            AwardedCoreMinutes = e.ExpCoreMinutes,
             PeakPercent = Fmt(e.PeakPercent),
             MaxGhz = Fmt(e.MaxGhz),
             PeakSeconds = Fmt(e.PeakSeconds),
@@ -422,6 +440,7 @@ public static class CoreExpStore
             {
                 LoadCoreMinutes = LoadCoreMinutes,
                 FloorCoreMinutes = FloorCoreMinutes,
+                AwardedCoreMinutes = AwardedCoreMinutes,
                 PeakPercent = Parse(PeakPercent),
                 MaxGhz = maxGhz,
                 PeakSeconds = peakSeconds,

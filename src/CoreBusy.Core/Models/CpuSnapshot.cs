@@ -3,6 +3,13 @@ namespace CoreBusy.Core.Models;
 /// <summary>CPU 整体快照（一次采样）。</summary>
 public sealed record CpuSnapshot
 {
+    public static CpuSnapshot Unavailable { get; } = new()
+    {
+        TotalUsagePercent = double.NaN, PackageTemperatureC = double.NaN,
+        PeakTemperatureC = double.NaN, PackagePowerW = double.NaN,
+        AverageFrequencyGHz = double.NaN, FanRpm = double.NaN,
+    };
+
     /// <summary>CPU 总使用率（0-100）。</summary>
     public double TotalUsagePercent { get; init; }
 
@@ -53,7 +60,7 @@ public sealed record CpuSnapshot
     public IReadOnlyList<DriveTemperatureReading> DriveTemperatures { get; init; } = [];
 
     /// <summary>
-    /// **全部独显**的实测功率之和（W，v1.20.1）。NaN = 没有独显功率传感器
+    /// **全部独显**的完整实测功率之和（W）。NaN = 未取得全部独显的功率读数
     /// （核显、或驱动缺失），**不是 0 W** —— 0 W 是独显下电时的合法读数（Optimus 笔记本）。
     /// </summary>
     public double DiscreteGpuPowerW { get; init; } = double.NaN;
@@ -63,6 +70,9 @@ public sealed record CpuSnapshot
     /// 整机功耗模型据此决定显卡项是"单独计"还是"已含在 CPU 封装内"。
     /// </summary>
     public IReadOnlyList<string> DiscreteGpuNames { get; init; } = [];
+
+    /// <summary>逐独显的功率与占用率，保留缺失状态，供整机模型逐卡回退。</summary>
+    public IReadOnlyList<GpuPowerReading> DiscreteGpuReadings { get; init; } = [];
 
     /// <summary>正在转动的风扇数量（v1.20.1）。整机功耗模型按个数计风扇功耗。</summary>
     public int ActiveFanCount { get; init; }

@@ -281,6 +281,16 @@ public static class UpdateService
     }
 
     /// <summary>启动暂存的自换版脚本；调用方随即退出本进程，脚本在锁释放后完成换版并重启。</summary>
+    internal static bool CanInstall(string installDir, string stageDir)
+    {
+        if (!Directory.Exists(installDir) || !File.Exists(Path.Combine(installDir, "CoreBusy.App.exe"))
+            || !File.Exists(Path.Combine(stageDir, "CoreBusy.App.exe"))) return false;
+        var probe = Path.Combine(installDir, ".corebusy-update-" + Guid.NewGuid().ToString("N") + ".tmp");
+        try { using (File.Create(probe)) { } return true; }
+        catch (Exception ex) { AppLog.Write("update preflight", ex); return false; }
+        finally { TryDelete(probe); }
+    }
+
     public static bool LaunchStagedUpdate(string stageDir)
     {
         var exePath = Environment.ProcessPath;
@@ -295,11 +305,13 @@ public static class UpdateService
         if (string.IsNullOrWhiteSpace(installDir))
             return false;
 
+        if (!CanInstall(installDir, stageDir)) return false;
+
         // cmd /c 接多段带引号参数的标准写法：整体再加一层引号。
         var psi = new ProcessStartInfo
         {
             FileName = "cmd.exe",
-            Arguments = "/c \"\"" + script + "\" \"" + installDir + "\" \"" + stageDir + "\"\"",
+            Arguments = "/c \"\"" + script + "\" \"" + installDir + "\" \"" + stageDir + "\" " + Environment.ProcessId + "\"",
             CreateNoWindow = true,
             UseShellExecute = false,
         };
@@ -351,7 +363,7 @@ public static class UpdateService
 
         if (!LaunchStagedUpdate(stageDir))
         {
-            MessageBox.Show(owner, "安装脚本启动失败，本次未安装。", "CORE-BUSY 更新",
+            MessageBox.Show(owner, "安装目录不可写、安装包不完整或脚本启动失败，本次未退出程序。", "CORE-BUSY 更新",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -360,38 +372,55 @@ public static class UpdateService
     }
 
     /// <summary>暂存脚本内容（纯 ASCII，路径一律经 %1/%2 传入，规避批处理的编码坑）。</summary>
-    private static void WriteUpdateScript(string path)
+    private static void WriteUpdateScript(string path, int maxAttempts = 30)
     {
+        if (maxAttempts is < 1 or > 60) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
         const string script = """
 @echo off
-rem CORE-BUSY staged self-update. Args: 1 = install dir, 2 = staged dir.
-rem Flow: wait until the running exe can be renamed (app exited), back up the old
-rem exe, copy the new one in, start it, then clean up.
 setlocal
 set "INSTALL=%~1"
 set "STAGED=%~2"
 set "EXE=%INSTALL%\CoreBusy.App.exe"
-set "BAK=CoreBusy.App.exe.old"
-
+set "BAK=%INSTALL%\CoreBusy.App.exe.old"
+set "LOG=%STAGED%\update.log"
+set /a ATTEMPTS=0
+if not exist "%INSTALL%\" goto failed
+if not exist "%EXE%" goto failed
+if not exist "%STAGED%\CoreBusy.App.exe" goto failed
+rem Wait for the original process to release both its files and the single-instance mutex.
+if "%~3"=="" goto waitlock
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$p=Get-Process -Id %~3 -ErrorAction SilentlyContinue; if ($p -and -not $p.WaitForExit(__WAIT_MS__)) { exit 1 }"
+if errorlevel 1 goto failed
 :waitlock
-if exist "%INSTALL%\%BAK%" del "%INSTALL%\%BAK%" >nul 2>&1
-ren "%EXE%" "%BAK%" >nul 2>&1
-if errorlevel 1 (
-    ping -n 2 127.0.0.1 >nul
-    goto waitlock
-)
+set /a ATTEMPTS+=1
+if exist "%BAK%\" goto failed
+if exist "%BAK%" del /q "%BAK%" >nul 2>&1
+ren "%EXE%" "CoreBusy.App.exe.old" >nul 2>&1
+if not errorlevel 1 goto install
+if %ATTEMPTS% GEQ __MAX_ATTEMPTS__ goto failed
+ping -n 2 127.0.0.1 >nul
+goto waitlock
+:install
 copy /y "%STAGED%\CoreBusy.App.exe" "%EXE%" >nul 2>&1
 if errorlevel 1 goto rollback
 start "" /d "%INSTALL%" "%EXE%"
-del "%INSTALL%\%BAK%" >nul 2>&1
+if errorlevel 1 goto rollback
+del "%BAK%" >nul 2>&1
 exit /b 0
-
 :rollback
-ren "%INSTALL%\%BAK%" "CoreBusy.App.exe" >nul 2>&1
+rem A failed copy can leave a partial destination; remove it before restoring the old EXE.
+if exist "%EXE%" del "%EXE%" >nul 2>&1
+ren "%BAK%" "CoreBusy.App.exe" >nul 2>&1
+if errorlevel 1 goto failed
 start "" /d "%INSTALL%" "%EXE%"
+:failed
+> "%LOG%" echo CORE-BUSY update failed. The original program has not been intentionally removed.
+>> "%LOG%" echo Check folder permissions, running processes and free disk space. Retry or download the ZIP manually.
+if not "%COREBUSY_UPDATE_SILENT%"=="1" start "" notepad.exe "%LOG%"
 exit /b 1
 """;
-        File.WriteAllText(path, script);
+        File.WriteAllText(path, script.Replace("__MAX_ATTEMPTS__", maxAttempts.ToString())
+            .Replace("__WAIT_MS__", (maxAttempts * 1000).ToString()));
     }
 
     private static void Report(IProgress<UpdateDownloadProgress>? progress, long received, long total)

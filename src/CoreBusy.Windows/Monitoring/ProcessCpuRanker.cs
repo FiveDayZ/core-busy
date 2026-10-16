@@ -9,7 +9,7 @@ using CoreBusy.Core.Models;
 /// 缓存 Process 句柄避免反复枚举；进程列表每 30 秒刷新一次。
 /// 百分比按"占全部逻辑处理器总容量的百分比"折算（与任务管理器口径一致）。
 /// </summary>
-public sealed class ProcessCpuRanker : IProcessCpuRanker
+public sealed class ProcessCpuRanker : IProcessCpuRanker, IDisposable
 {
     private readonly int _logicalProcessorCount;
     private readonly Dictionary<int, (Process Process, TimeSpan LastCpuTime)> _tracked = new();
@@ -94,6 +94,13 @@ public sealed class ProcessCpuRanker : IProcessCpuRanker
             // 系统调用失败按空样本处理，不打断主循环。
             return new List<ProcessCpuSample>();
         }
+    }
+
+    public void Dispose()
+    {
+        foreach (var entry in _tracked.Values)
+            entry.Process.Dispose();
+        _tracked.Clear();
     }
 
     private void RefreshProcesses()

@@ -2,6 +2,8 @@ namespace CoreBusy.App.ViewModels.Dashboard;
 
 using CoreBusy.App.Infrastructure;
 using CoreBusy.Core.Progression;
+using CoreBusy.App.Themes;
+using CoreBusy.Core.Models;
 
 /// <summary>
 /// 单个物理核的等级状态（v1.22.0）：累积 EXP → 等级 / 进度 / 已解锁内容。
@@ -23,10 +25,22 @@ using CoreBusy.Core.Progression;
 /// </remarks>
 public sealed class CoreLevelVm : ObservableObject
 {
+    public CoreLevelVm(CpuVendor vendor = CpuVendor.Unknown) => Vendor = vendor;
+    public CpuVendor Vendor { get; }
+    public CpuEvolutionForm Appearance => CpuEvolutionCatalog.For(Vendor, StageIndex);
+    public string BrandText => Vendor switch { CpuVendor.Intel => "INTEL", CpuVendor.Amd => "AMD", _ => "CPU" };
+    public string AppearanceText => Vendor is CpuVendor.Intel or CpuVendor.Amd
+        ? $"{BrandText}\n成长封装外观，不代表硬件规格变化"
+        : "CPU 厂商未识别，使用通用封装；经验仍正常累积";
+
     private int _level = 1;
     private double _progress;
     private double _expCoreMinutes;
     private bool _isMaxLevel;
+    private bool _hasRefreshed;
+
+    /// <summary>运行中跨阶段的序号；首次读档只恢复外观，不触发进化动画。</summary>
+    public int EvolutionVersion { get; private set; }
 
     /// <summary>
     /// 下一个待解锁的内容。**必须在构造时就给一个值**（Lv 2 那一条），
@@ -40,17 +54,32 @@ public sealed class CoreLevelVm : ObservableObject
 
     /// <summary>
     /// 成长阶段（v1.25.0 养成游戏形态）：等级映射为进化阶段，
-    /// 让"练到多少级"有一个一眼可读的形象感。满级独占「传说」。
+    /// 主卡与详情共用真实厂商的五阶段封装，与界面主题无关。
     /// </summary>
-    public string StageText => _isMaxLevel
-        ? "传说"
-        : _level switch
+    public int StageIndex => UiTheme.StageIndexOf(_level);
+    public string StageText => Vendor == CpuVendor.Unknown ? "CPU" : $"形态 {StageIndex + 1}/5";
+    public bool HasNextEvolution => Vendor is CpuVendor.Intel or CpuVendor.Amd && StageIndex < 4;
+    public int NextStageIndex => Math.Min(StageIndex + 1, 4);
+    public int NextEvolutionLevel => CoreProgressionRules.FormLevels[NextStageIndex];
+    public string NextEvolutionText => HasNextEvolution
+        ? $"Lv {NextEvolutionLevel} 解锁新外观"
+        : Vendor == CpuVendor.Unknown ? "厂商未识别 · 经验正常累积" : "已达最终形态";
+    public string NextEvolutionTip => HasNextEvolution
+        ? $"下次外观升级：Lv {NextEvolutionLevel} · {BrandText}\n仅改变成长外观，不改变本机硬件型号或性能"
+        : AppearanceText;
+
+    /// <summary>当前形态到下一形态的经验进度，独立于单级 EXP 条。</summary>
+    public double EvolutionProgress
+    {
+        get
         {
-            < 10 => "幼体",
-            < 30 => "成长期",
-            < 60 => "成熟期",
-            _ => "究极期",
-        };
+            if (!HasNextEvolution) return StageIndex == 4 ? 1 : 0;
+            var startLevel = CoreProgressionRules.FormLevels[StageIndex];
+            var start = CoreLevelCurve.CumulativeExp(startLevel);
+            var end = CoreLevelCurve.CumulativeExp(NextEvolutionLevel);
+            return double.IsFinite(_expCoreMinutes) ? Math.Clamp((_expCoreMinutes - start) / (end - start), 0, 1) : 0;
+        }
+    }
 
     /// <summary>本级进度（0-100，用于进度条）。</summary>
     public double ProgressPercent => Math.Clamp(_progress * 100.0, 0.0, 100.0);
@@ -123,6 +152,7 @@ public sealed class CoreLevelVm : ObservableObject
     /// </summary>
     public void Refresh(double expCoreMinutes, bool floorDominated)
     {
+        var previousStage = StageIndex;
         var level = CoreLevelCurve.LevelOf(expCoreMinutes);
         var progress = CoreLevelCurve.LevelProgress(expCoreMinutes);
         var max = level >= CoreLevelCurve.MaxLevel;
@@ -144,6 +174,24 @@ public sealed class CoreLevelVm : ObservableObject
         Progress = progress;
         IsMaxLevel = max;
         NextUnlock = next;
+
+        if (StageIndex != previousStage)
+        {
+            OnPropertyChanged(nameof(StageIndex));
+            OnPropertyChanged(nameof(HasNextEvolution));
+            OnPropertyChanged(nameof(NextStageIndex));
+            OnPropertyChanged(nameof(NextEvolutionLevel));
+            OnPropertyChanged(nameof(NextEvolutionText));
+            OnPropertyChanged(nameof(NextEvolutionTip));
+            OnPropertyChanged(nameof(Appearance));
+            OnPropertyChanged(nameof(AppearanceText));
+            if (_hasRefreshed && StageIndex > previousStage && Vendor is CpuVendor.Intel or CpuVendor.Amd)
+            {
+                EvolutionVersion++;
+                OnPropertyChanged(nameof(EvolutionVersion));
+            }
+        }
+        _hasRefreshed = true;
 
         if (levelChanged)
             OnPropertyChanged(nameof(Level));
@@ -168,9 +216,11 @@ public sealed class CoreLevelVm : ObservableObject
         {
             OnPropertyChanged(nameof(ExpCoreMinutes));
             OnPropertyChanged(nameof(ExpToNext));
+            OnPropertyChanged(nameof(EvolutionProgress));
         }
 
         OnPropertyChanged(nameof(TipText));
+        OnPropertyChanged(nameof(ProgressSummaryText));
         _floorDominated = floorDominated;
     }
 
@@ -220,6 +270,10 @@ public sealed class CoreLevelVm : ObservableObject
     /// 刻意把「进度轴**不是**健康度」这句话写进说明里 ——
     /// 这是最容易被误解的地方（用户会自然把等级当机器好坏的指标）。
     /// </remarks>
+    public string ProgressSummaryText => IsMaxLevel
+        ? $"累计 {CoreLevelCurve.ToCoreHours(_expCoreMinutes):0.0} 核·时"
+        : $"累计 {CoreLevelCurve.ToCoreHours(_expCoreMinutes):0.0} 核·时 · 下一级还需 {ExpToNext:0.0} 核·分";
+
     public string TipText => BuildTip();
 
     private string BuildTip()

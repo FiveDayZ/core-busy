@@ -18,8 +18,8 @@ using CoreBusy.Core.Models;
 ///     多独显按块求和；0 W 是合法读数（Optimus 笔记本的独显会被下电），不当"读不到"处理。</description>
 ///   </item>
 ///   <item>
-///     <term>内存</term><description>消费级平台**没有任何内存功耗传感器**，恒为型号模型：
-///     容量 × 每 GB 系数 × 代际系数 × 占用率。</description>
+///     <term>内存</term><description>当前采集链未提供 DIMM 功率读数，采用容量基线：
+///     容量 × 每 GB 参考系数 × 桌面修正因子。容量占用率不代表读写活动。</description>
 ///   </item>
 ///   <item>
 ///     <term>硬盘</term><description>同样无功率传感器，但介质类型（NVMe / SATA SSD / HDD）与
@@ -61,8 +61,8 @@ using CoreBusy.Core.Models;
 ///     空闲项按盘数计，摆幅只加一份 —— 宁可少算一点，也不重复计。</item>
 ///   <item>核显卡在封装读数之内的前提，对 AMD APU（SMU 报整颗 SoC）与 Intel
 ///     （CPU Package 含核显）都成立；若某平台只报核心域不含核显，则本模型会少算几瓦。</item>
-///   <item>多独显时副卡的负载比例读不到，按主卡代算；混合场景（一块有功率传感器、一块没有）
-///     只采信有读数的那些，会少计无传感器的那块。</item>
+///   <item>逐独显优先采用该卡功率，缺失则用该卡型号与负载估算；负载也缺失时用
+///     空闲与满载中值，仅为区间中心估计，不是实测。</item>
 /// </list>
 /// <para>
 /// <b>界面责任。</b>估算值必须始终带「≈」前缀，提示里逐项列出实测/模型身份与所用系数 ——
@@ -120,9 +120,8 @@ public static class SystemPowerEstimator
     public const double MaxGpuFallbackWatts = 600.0;
 
     /// <summary>
-    /// 内存每 GB 的**满载**功耗系数（W/GB）。取 0.392：这是 Cloud Carbon Footprint /
-    /// Cloud Jewels 方法学公开的内存系数（0.000392 kWh per GB·h），也是本模型里唯一
-    /// 能引用到具体公开来源的内存系数。
+    /// 内存容量模型的历史参考系数（W/GiB）。0.392 源自云端容量计费估算，
+    /// 不是消费级 DIMM 实测满载功率；保留旧校准配置，再以基线修正系数估算桌面量级。
     /// </summary>
     public const double DefaultDramWattsPerGb = 0.392;
 
@@ -168,8 +167,8 @@ public static class SystemPowerEstimator
 
     // ── 模型内部的形态常数 ──────────────────────────────────────────────
 
-    /// <summary>内存空闲功耗占满载系数的比例（空闲 ≈ 15% 满载）。</summary>
-    public const double DramIdleFraction = 0.15;
+    /// <summary>缺少 DIMM 功率/活动遥测时的桌面容量基线修正因子；经验默认，可校准，不是厂商规格。</summary>
+    public const double DramBaselineFactor = 0.35;
 
     /// <summary>
     /// 显卡空闲功耗占额定功率的比例。独显待机（无 3D 负载但显存与供电在线）实测普遍在
@@ -252,9 +251,7 @@ public static class SystemPowerEstimator
     ///         提示里必须说明"未计入"—— 静默当成核显等于替用户断言一件我们并不知道的事。</item>
     /// </list>
     /// <para>
-    /// 多独显（含双卡）按块求和：实测和优先，模型路径下每块各取自己的额定功率，
-    /// 但**共用主卡的负载比例**（副卡的实际负载读不到，按主卡代算是保守近似，
-    /// 记为已知局限）。
+    /// 多独显逐卡求和；逐卡字段缺席的旧调用方继续使用完整聚合值与主卡负载。
     /// </para>
     /// </summary>
     private static (double Watt, GpuPowerSource Source, double? Rated, double? Load) EstimateGpu(
@@ -262,6 +259,31 @@ public static class SystemPowerEstimator
     {
         var load = inputs.GpuLoadPercent;
         var names = inputs.DiscreteGpuNames;
+        if (inputs.DiscreteGpuReadings.Count > 0)
+        {
+            var cardTotal = 0.0;
+            var measuredCount = 0;
+            double? firstCardRated = null;
+            foreach (var card in inputs.DiscreteGpuReadings)
+            {
+                // 0 W 只与本卡的占用率互检，不能拿忙碌主卡否定已下电的副卡。
+                if (card.PowerWatt is { } watt && double.IsFinite(watt) && watt >= 0 && watt <= MaxGpuWatt
+                    && !(watt == 0 && NormalizeLoad(card.LoadPercent) >= GpuLoadContradictionThreshold))
+                {
+                    cardTotal += watt;
+                    measuredCount++;
+                }
+                else
+                {
+                    var rated = GpuRatedPower.ResolveRatedWatt(card.Name) ?? NormalizeGpuFallback(settings.GpuFallbackWatts);
+                    firstCardRated ??= rated;
+                    cardTotal += GpuModelWatt(rated, card.LoadPercent);
+                }
+            }
+            var source = measuredCount == inputs.DiscreteGpuReadings.Count ? GpuPowerSource.Measured
+                : measuredCount == 0 ? GpuPowerSource.RatedByModel : GpuPowerSource.Mixed;
+            return (cardTotal, source, firstCardRated, load);
+        }
 
         if (names.Count == 0)
         {
@@ -292,7 +314,7 @@ public static class SystemPowerEstimator
 
         // ② 型号估算：逐块额定功率 × 负载曲线。
         var fallback = NormalizeGpuFallback(settings.GpuFallbackWatts);
-        var ramp = GpuIdleFraction + (1 - GpuIdleFraction) * NormalizeLoad(load);
+
 
         var total = 0.0;
         double? firstRated = null;
@@ -304,7 +326,7 @@ public static class SystemPowerEstimator
                 continue;
 
             firstRated ??= rated;
-            total += rated * ramp;
+            total += GpuModelWatt(rated, load);
         }
 
         return total > 0
@@ -312,11 +334,20 @@ public static class SystemPowerEstimator
             : (0, GpuPowerSource.Unavailable, null, load);
     }
 
+    // 仅缺测时使用。20 W 空闲上限避免高 TGP 卡按固定比例凭空制造几十瓦待机功率；
+    // 多屏/高刷新率等场景可能超出此基线，只有实测或功率计校准能消除这些差异。
+    private static double GpuModelWatt(double rated, double? load)
+    {
+        var idle = Math.Min(20, rated * GpuIdleFraction);
+        var activity = load is { } value && double.IsFinite(value) ? NormalizeLoad(value) : .5;
+        return idle + (rated - idle) * activity;
+    }
+
     // ---------------------------------------------------------------- 内存
 
     /// <summary>
-    /// 内存项（W）：容量 × 每 GB 满载系数 × 代际系数 × (空闲比 + 剩余比 × 占用率)。
-    /// 消费级平台没有内存功耗传感器，故恒为模型值。
+    /// 内存项（W）：容量 × 参考系数 × 桌面基线修正。
+    /// 当前采集链没有 DIMM 功率与访问带宽，故为容量基线，不随内存占用率伪造动态功率。
     /// </summary>
     private static double EstimateMemory(SystemPowerInputs inputs, SystemPowerSettings settings)
     {
@@ -324,22 +355,10 @@ public static class SystemPowerEstimator
         if (!double.IsFinite(gb) || gb <= 0 || gb > MaxMemoryGb)
             return 0;
 
-        var perGb = NormalizeDramPerGb(settings.DramWattsPerGb) * MemoryGenerationFactor(inputs.MemoryGeneration);
-        var load = NormalizeLoad(inputs.MemoryLoadPercent);
-
-        return gb * perGb * (DramIdleFraction + (1 - DramIdleFraction) * load);
+        var perGb = NormalizeDramPerGb(settings.DramWattsPerGb);
+        // RAM 里存了多少数据不能推导访问带宽；无活动遥测时保持稳定基线，避免缓存占用造成假功率。
+        return gb * perGb * DramBaselineFactor;
     }
-
-    /// <summary>代际系数：以 DDR4 为 1.0，其余按电压/每 GB 功耗的公开规格相对取整。</summary>
-    private static double MemoryGenerationFactor(MemoryGeneration generation) => generation switch
-    {
-        MemoryGeneration.Ddr3 => 0.85,
-        MemoryGeneration.Ddr4 => 1.0,
-        MemoryGeneration.Ddr5 => 1.35,
-        MemoryGeneration.LpDdr4 => 0.70,
-        MemoryGeneration.LpDdr5 => 0.75,
-        _ => 1.0, // Unknown：按 DDR4 处理（最普遍），但"未知"不影响它本来就是模型值这一身份。
-    };
 
     // ---------------------------------------------------------------- 硬盘
 
@@ -362,7 +381,7 @@ public static class SystemPowerEstimator
         var swing = 0.0;
         var known = 0;
 
-        foreach (var kind in kinds)
+        foreach (var kind in kinds.Take(count))
         {
             var (kindIdle, kindActive) = StorageWatts(kind);
             idle += kindIdle;
@@ -379,7 +398,7 @@ public static class SystemPowerEstimator
             swing = Math.Max(swing, unknownActive - unknownIdle);
         }
 
-        return idle + swing * StorageActivityRatio(inputs, DominantKind(kinds));
+        return idle + swing * StorageActivityRatio(inputs, DominantKind(kinds.Take(count).ToArray()));
     }
 
     /// <summary>本机介质里摆幅最大的那一种（用于把吞吐换算成活动度时的参考带宽）。</summary>

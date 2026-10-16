@@ -142,7 +142,7 @@ public static class TelemetryStore
             if (!File.Exists(FilePath))
                 return (entry, CaliberId);
 
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            using var document = JsonDocument.Parse(JsonFile.ReadAllText(FilePath));
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return (entry, CaliberId);
@@ -184,7 +184,7 @@ public static class TelemetryStore
                 PowerPeakW = Fmt(powerPeakW),
                 PowerLastW = Fmt(powerLastW),
             };
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
+            JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
         }
         catch (Exception ex)
         {

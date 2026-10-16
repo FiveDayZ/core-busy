@@ -230,7 +230,7 @@
     <div class="gpanel">
       <button class="x" onclick="closeGrades()">关闭 ✕</button>
       <h2 id="gtitle">逐核等级</h2>
-      <div class="hint" style="margin-top:0">按封装内各核心的健康度分档（幼体 / 成长期 / 成熟期 / 究极期 / 传说），悬停徽章可查看核心名与健康分。</div>
+      <div class="hint" style="margin-top:0">按累计经验等级划分成长阶段（Lv 1 / 10 / 40 / 75 / 99）；成长阶段不代表硬件健康。悬停徽章可查看独立的健康读数。</div>
       <div id="gbody"><span class="dim">-</span></div>
     </div>
   </div>
@@ -267,7 +267,10 @@ function fmtSeen(ts) {
   return abs + "（" + Math.round(diff/86400) + " 天前）";
 }
 function isOnline(ts) { return !!ts && (Date.now() - new Date(ts).getTime()) / 1000 < 900; }
-function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "-" : String(s); return d.innerHTML; }
+function esc(s) {
+  return (s == null ? "-" : String(s)).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
 function gradesBadges(list) {
   if (!list || !list.length) return '<span class="dim">-</span>';
   return list.map(g => {

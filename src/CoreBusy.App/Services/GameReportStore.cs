@@ -25,8 +25,7 @@ public static class GameReportStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private static string DirectoryPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CORE-BUSY", "reports");
+    private static string DirectoryPath => Path.Combine(EnergyHistoryStore.DataDirectory, "reports");
 
     /// <summary>保存报告并返回文件路径；失败返回 null（不打断主循环）。</summary>
     public static string? Save(GameReport report)
@@ -35,7 +34,7 @@ public static class GameReportStore
         {
             Directory.CreateDirectory(DirectoryPath);
             var path = Path.Combine(DirectoryPath, $"game-{report.EndedAt:yyyyMMdd-HHmmss}.json");
-            File.WriteAllText(path, JsonSerializer.Serialize(report, JsonOptions));
+            JsonFile.WriteAllText(path, JsonSerializer.Serialize(report, JsonOptions));
             return path;
         }
         catch (Exception)

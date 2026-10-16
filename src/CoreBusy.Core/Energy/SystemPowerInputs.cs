@@ -26,7 +26,7 @@ public sealed record SystemPowerInputs
     public double? CpuPackageWatt { get; init; }
 
     /// <summary>
-    /// **全部独显**的功率实测值之和（W）。null 表示没有任何独显功率传感器（核显、或驱动缺失），
+    /// **全部独显**的完整功率实测值之和（W）。null 表示完整聚合不可用（含部分卡缺测），
     /// 此时由型号表估算兜底 —— 注意 0 是合法读数（独显在 Optimus/运行时 D3 下确实会下电）。
     /// </summary>
     public double? GpuMeasuredWatt { get; init; }
@@ -36,6 +36,9 @@ public sealed record SystemPowerInputs
     /// 只有独显需要在封装之外单独计；型号判别不出的卡不在本列表（宁可不计，也不冒充核显）。
     /// </summary>
     public IReadOnlyList<string> DiscreteGpuNames { get; init; } = [];
+
+    /// <summary>逐卡读数优先于旧聚合字段；缺失项由该卡自己的型号和负载估算。</summary>
+    public IReadOnlyList<GpuPowerReading> DiscreteGpuReadings { get; init; } = [];
 
     /// <summary>是否存在显卡（含核显）。false 时显卡项恒为 0，且提示里不出现该行。</summary>
     public bool HasGpu { get; init; }
@@ -49,10 +52,10 @@ public sealed record SystemPowerInputs
     /// <summary>物理内存总量（GB）。</summary>
     public double MemoryTotalGb { get; init; }
 
-    /// <summary>内存代际（型号信息，决定每 GB 功耗系数）。</summary>
+    /// <summary>内存代际（旧调用方兼容字段）。当前容量基线不依靠代际标签推测功耗差异。</summary>
     public MemoryGeneration MemoryGeneration { get; init; }
 
-    /// <summary>内存占用率（0–100）；不可读时为 null（按空闲处理）。</summary>
+    /// <summary>内存容量占用率（旧调用方兼容字段）。不能代表读写活动，功耗模型不再使用。</summary>
     public double? MemoryLoadPercent { get; init; }
 
     /// <summary>物理固定盘数量。</summary>
@@ -88,6 +91,9 @@ public enum GpuPowerSource
 
     /// <summary>按型号额定功率 × 负载估算。</summary>
     RatedByModel = 3,
+
+    /// <summary>部分独显实测，其他独显按型号估算。</summary>
+    Mixed = 4,
 }
 
 /// <summary>

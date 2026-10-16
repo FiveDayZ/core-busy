@@ -24,7 +24,7 @@ using CoreBusy.Core.Models;
 /// 占用 ≥ 15%    → 负荷 = 占用%/100 × Δt
 /// 5% ≤ 占用 &lt; 15% → 兜底 = Δt × 0.15
 /// 占用 &lt; 5%     → 两者皆0（完全摸鱼不给经验）
-/// EXP = max(负荷, 兜底)
+/// 总 EXP = Σ 每个区间的 max(负荷, 兜底)
 /// </code>
 /// 两项原始量分别累加保存，界面才能回答"这颗核的经验是干活挣的还是陪着挣的"——
 /// 兜底长期生效是核角色判定的输入。
@@ -34,6 +34,7 @@ public sealed class CoreExpAccumulator
 {
     private readonly Dictionary<string, double> _loadCoreMinutes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, double> _floorCoreMinutes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, double> _awardedCoreMinutes = new(StringComparer.Ordinal);
 
     /// <summary>已积分的墙钟时长（秒）。</summary>
     public double ObservedSeconds { get; private set; }
@@ -49,9 +50,10 @@ public sealed class CoreExpAccumulator
     public static (double Load, double Floor) SplitCoreMinutes(double usagePercent, double deltaSeconds)
     {
         // 读不到就不给：NaN 不参与任何判定，更不能拿 0 冒充"真的空闲"。
-        if (double.IsNaN(usagePercent) || double.IsNaN(deltaSeconds) || deltaSeconds <= 0)
+        if (!double.IsFinite(usagePercent) || !double.IsFinite(deltaSeconds) || deltaSeconds <= 0)
             return (0.0, 0.0);
 
+        usagePercent = Math.Clamp(usagePercent, 0, 100);
         var minutes = deltaSeconds / 60.0;
 
         // 完全摸鱼：低于有感知阈值不给任何经验。
@@ -62,7 +64,7 @@ public sealed class CoreExpAccumulator
         var load = usagePercent / 100.0 * minutes;
 
         // 轻载区间由陪伴兜底接管；两项并存但**不相加**，
-        // 取 max 是在 ExpCoreMinutes 里做的（相加会在 5%~15% 区间产生约 2.5 倍套利）。
+        // 每段取 max 后再累加授奖量（相加会在 5%~15% 区间产生约 2.5 倍套利）。
         if (usagePercent < CoreExpCaliber.MinLoadPct)
             return (load, minutes * CoreExpCaliber.FloorFactor);
 
@@ -72,7 +74,7 @@ public sealed class CoreExpAccumulator
     /// <summary>
     /// 一次采样的授奖量（核·分）。
     /// </summary>
-    /// <remarks>保留为独立入口便于单测直接打点；语义与 <see cref="ExpCoreMinutes"/> 的 max 口径一致。</remarks>
+    /// <remarks>保留为独立入口便于单测直接打点；语义按单个区间计算，实际累计也是逐区间相加。</remarks>
     public static double AwardCoreMinutes(double usagePercent, double deltaSeconds)
     {
         var (load, floor) = SplitCoreMinutes(usagePercent, deltaSeconds);
@@ -84,7 +86,7 @@ public sealed class CoreExpAccumulator
     /// <param name="deltaSeconds">墙钟差（秒）。非正数直接忽略。</param>
     public void Accumulate(IReadOnlyList<CpuCoreSnapshot> snapshots, double deltaSeconds)
     {
-        if (double.IsNaN(deltaSeconds) || deltaSeconds <= 0 || snapshots.Count == 0)
+        if (!double.IsFinite(deltaSeconds) || deltaSeconds <= 0 || snapshots.Count == 0)
             return;
 
         ObservedSeconds += deltaSeconds;
@@ -103,22 +105,17 @@ public sealed class CoreExpAccumulator
 
             // 兜底必须**累加**，因为它是逐 Δt 区间的量：每段的 Δt 不同，判定出的兜底也不同。
             //（曾误用 Math.Max，结果 240 段 × 14% 只剩最后一段的 0.9 而非 216。）
-            //「不相加」指的是同一段内负荷与兜底不叠加，由 ExpCoreMinutes 的 max 承担；
+            //「不相加」指的是同一段内负荷与兜底不叠加，在该区间用 Math.Max 承担；
             // 不同段之间是各自独立的观测，必须都记上。
             _floorCoreMinutes[core.Id] = accFloor + floor;
+            _awardedCoreMinutes.TryGetValue(core.Id, out var awarded);
+            _awardedCoreMinutes[core.Id] = awarded + Math.Max(load, floor);
         }
     }
 
-    /// <summary>该核累计获得的 EXP（核·分）= max(负荷, 兜底)。未出现过的 Id 返回 0。</summary>
+    /// <summary>逐区间取 max 后累计的实际 EXP；不会被历史兜底阻挡。</summary>
     public double ExpCoreMinutes(string id)
-    {
-        if (string.IsNullOrEmpty(id))
-            return 0.0;
-
-        var load = _loadCoreMinutes.TryGetValue(id, out var l) ? l : 0.0;
-        var floor = _floorCoreMinutes.TryGetValue(id, out var f) ? f : 0.0;
-        return Math.Max(load, floor);
-    }
+        => !string.IsNullOrEmpty(id) && _awardedCoreMinutes.TryGetValue(id, out var value) ? value : 0.0;
 
     /// <summary>该核的负荷经验原始量（核·分）。</summary>
     public double LoadCoreMinutes(string id)
@@ -153,6 +150,7 @@ public sealed class CoreExpAccumulator
     {
         _loadCoreMinutes.Clear();
         _floorCoreMinutes.Clear();
+        _awardedCoreMinutes.Clear();
         ObservedSeconds = 0;
     }
 }

@@ -24,6 +24,9 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     private readonly AcpiTemperatureFallback _acpi = new();
     private readonly AsusWmiFanReader _asusFan = new();
     private readonly ProcessCpuRanker _ranker;
+    private long _lastProcessSampleTimestamp;
+    private long _lastSampleTimestamp;
+    private int _disposed;
     private readonly PerCoreUsageProvider? _usageProvider;
     private readonly System.Diagnostics.PerformanceCounter?[] _perfPerf;
     private readonly Thread _sampler;
@@ -35,6 +38,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     private CpuInfo _info;
     private double _baseClockMhz;
     private bool _baseClockRefined;
+    private bool _sensorsStarted;
     private readonly CoreLayoutMode _layout;
     private readonly List<CoreGroup> _cores;
     private readonly List<CpuCoreGroup> _coreGroups;
@@ -55,6 +59,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     // 绝不用 0 冒充（0 W 在独显那一路是**合法读数**，两者必须能分开）。
     private double? _discreteGpuPower;
     private IReadOnlyList<string> _discreteGpuNames = [];
+    private IReadOnlyList<GpuPowerReading> _discreteGpuReadings = [];
     private int _activeFanCount;
     private double? _storageThroughputMbps;
     private double? _storageBusyPercent;
@@ -89,9 +94,10 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     private volatile bool _sensorsEnabled = true;
     private volatile int _sampleIntervalMs = 1000;
 
-    public WindowsCpuMonitorService(IHardwareSensorService sensors, CoreLayoutMode layout = CoreLayoutMode.Spec)
+    public WindowsCpuMonitorService(IHardwareSensorService sensors, CoreLayoutMode layout = CoreLayoutMode.Spec, bool sensorsEnabled = true)
     {
         _sensors = sensors;
+        _sensorsEnabled = sensorsEnabled;
         _layout = layout;
 
         var baseInfo = new WmiCpuInfoService()
@@ -156,7 +162,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
         _perfPerf = BuildPerfPerformanceCounters(_info.LogicalProcessors);
         _ranker = new ProcessCpuRanker(_info.LogicalProcessors);
 
-        _logicalUsage = new double[_info.LogicalProcessors];
+        _logicalUsage = Enumerable.Repeat(double.NaN, _info.LogicalProcessors).ToArray();
         _coreUsage = new double[_cores.Count];
         _coreFreqGhz = new double[_cores.Count];
         _coreEffectiveGhz = new double[_cores.Count];
@@ -166,12 +172,25 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
 
         for (var i = 0; i < _cores.Count; i++)
         {
+            _coreUsage[i] = double.NaN;
             _coreEffectiveGhz[i] = double.NaN;
             _coreActivity[i] = double.NaN;
             _coreVoltage[i] = double.NaN;
         }
 
-        _sampler = new Thread(SamplerLoop)
+        _sampler = new Thread(() =>
+        {
+            try { SamplerLoop(); }
+            finally
+            {
+                _usageProvider?.Dispose();
+                foreach (var counter in _perfPerf) counter?.Dispose();
+                _ranker.Dispose();
+                try { _sensors.Dispose(); } catch { }
+                try { _asusFan.Dispose(); } catch { }
+                _stopEvent.Dispose();
+            }
+        })
         {
             IsBackground = true,
             Name = "corebusy-sampler",
@@ -196,14 +215,24 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     /// <inheritdoc />
     public CpuInfo GetCpuInfo() => _info;
 
+    public CpuMonitorFrame GetFrame()
+    {
+        lock (_gate)
+            return new(GetSnapshot(), GetCoreSnapshots()) { CapturedTimestamp = _lastSampleTimestamp };
+    }
+
+    private bool HasFreshSample => Volatile.Read(ref _disposed) == 0 && _lastSampleTimestamp != 0
+        && Stopwatch.GetElapsedTime(_lastSampleTimestamp).TotalSeconds <= Math.Max(1, SampleInterval.TotalSeconds * 3);
+
     /// <inheritdoc />
     public CpuSnapshot GetSnapshot()
     {
         lock (_gate)
         {
-            var total = _logicalUsage.Length > 0
+            if (!HasFreshSample) return CpuSnapshot.Unavailable;
+            var total = _logicalUsage.Length > 0 && _logicalUsage.All(double.IsFinite)
                 ? Math.Clamp(_logicalUsage.Average(), 0, 100)
-                : 0;
+                : double.NaN;
 
             var freqValues = _coreFreqGhz.Where(f => !double.IsNaN(f)).ToArray();
             var avgFreq = freqValues.Length > 0 ? freqValues.Average() : double.NaN;
@@ -224,6 +253,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                 DriveTemperatureC = _driveTemp ?? double.NaN,
                 DiscreteGpuPowerW = _discreteGpuPower ?? double.NaN,
                 DiscreteGpuNames = _discreteGpuNames,
+                DiscreteGpuReadings = _discreteGpuReadings,
                 ActiveFanCount = _activeFanCount,
                 StorageThroughputMbps = _storageThroughputMbps ?? double.NaN,
                 StorageBusyPercent = _storageBusyPercent ?? double.NaN,
@@ -237,11 +267,12 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
     {
         lock (_gate)
         {
+            var fresh = HasFreshSample;
             var result = new List<CpuCoreSnapshot>(_cores.Count);
             for (var i = 0; i < _cores.Count; i++)
             {
                 var core = _cores[i];
-                var usage = Math.Clamp(_coreUsage[i], 0, 100);
+                var usage = fresh ? Math.Clamp(_coreUsage[i], 0, 100) : double.NaN;
                 var osIndexes = core.OsIndexes;
 
                 // 线程明细：UI 的 Tile 内线程条与热力图线程行都取自这一份数据，
@@ -250,9 +281,9 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                 for (var t = 0; t < osIndexes.Length; t++)
                 {
                     var osIndex = osIndexes[t];
-                    var threadUsage = osIndex < _logicalUsage.Length && _logicalUsage.Length > 0
+                    var threadUsage = fresh && osIndex < _logicalUsage.Length && _logicalUsage.Length > 0
                         ? Math.Clamp(_logicalUsage[osIndex], 0, 100)
-                        : usage;
+                        : double.NaN;
 
                     threads[t] = new CpuThreadSnapshot
                     {
@@ -261,7 +292,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                         CoreId = core.DisplayName,
                         Index = t,
                         UsagePercent = threadUsage,
-                        FrequencyGHz = _coreFreqGhz[i],
+                        FrequencyGHz = fresh ? _coreFreqGhz[i] : double.NaN,
                         Status = CoreStatusClassifier.Classify(threadUsage),
                     };
                 }
@@ -272,11 +303,11 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                     Class = core.Class,
                     CcdIndex = core.CcdIndex,
                     UsagePercent = usage,
-                    FrequencyGHz = _coreFreqGhz[i],
-                    FrequencySource = _coreFreqSource[i],
-                    EffectiveFrequencyGHz = _coreEffectiveGhz[i],
-                    HardwareActivityPercent = _coreActivity[i],
-                    CoreVoltageV = _coreVoltage[i],
+                    FrequencyGHz = fresh ? _coreFreqGhz[i] : double.NaN,
+                    FrequencySource = fresh ? _coreFreqSource[i] : CoreFrequencySource.Unknown,
+                    EffectiveFrequencyGHz = fresh ? _coreEffectiveGhz[i] : double.NaN,
+                    HardwareActivityPercent = fresh ? _coreActivity[i] : double.NaN,
+                    CoreVoltageV = fresh ? _coreVoltage[i] : double.NaN,
                     LogicalProcessors = osIndexes,
                     Status = CoreStatusClassifier.Classify(usage),
                     Threads = threads,
@@ -292,11 +323,10 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _stopEvent.Set();
-        try { _sampler.Join(1500); } catch { }
-        try { _sensors.Dispose(); } catch { }
-        try { _asusFan.Dispose(); } catch { }
-        _stopEvent.Dispose();
+        // 慢传感器不能阻塞退出；资源由采样线程自己的 finally 收尾。
+        _sampler.Join(1500);
     }
 
     // ---------------------------------------------------------------- 后台采样
@@ -352,19 +382,6 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
 
     private void SamplerLoop()
     {
-        try
-        {
-            // LibreHardwareMonitor 首次枚举并安装内核驱动较慢，放后台线程执行。
-            _sensors.Start();
-        }
-        catch
-        {
-            // 非管理员会话下驱动加载失败：温度/功耗降级，UI 显示缺省值。
-        }
-
-        // 驱动就绪后立即做一次 MSR 基频修正（详见方法注释；仅执行一次）。
-        RefineBaseClockWithMsr();
-
         // PerformanceCounter 首次 NextValue 返回 0，先预热丢弃。
         PrimeCounters();
 
@@ -385,6 +402,16 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
         }
     }
 
+    private void EnsureSensorsStarted()
+    {
+        // 仅采样线程访问；关闭传感器时既不枚举硬件，也不启动内核驱动。
+        if (_sensorsStarted) return;
+        _sensorsStarted = true;
+        try { _sensors.Start(); }
+        catch { /* 权限不足时沿用缺省读数，不在每一帧重复初始化。 */ }
+        RefineBaseClockWithMsr();
+    }
+
     private void PrimeCounters()
     {
         try { _usageProvider?.SampleAll(); } catch { }
@@ -393,33 +420,33 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
 
     private void SampleOnce()
     {
+        var sensorsOn = _sensorsEnabled;
+        if (sensorsOn) EnsureSensorsStarted();
+        var capturedTimestamp = Stopwatch.GetTimestamp();
         double[]? logicalUsage = null;
         try { logicalUsage = _usageProvider?.SampleAll(); } catch { }
 
         var perf = SamplePerfPerformance();
 
         // 传感器轮询可被设置/性能模式关闭：此时跳过 LHM 读取与 ACPI 兜底，温度/功耗/风扇降级为缺省。
-        var sensorsOn = _sensorsEnabled;
         var sensor = sensorsOn ? ReadSensorSnapshot() : HardwareSensorSnapshot.Empty;
 
         // 风扇在**锁外**解析（v1.16.3）：ASUS 回退要过一次 WMI 查询，不该占着 _gate 挡 UI 取快照。
         var fan = ResolveFan(sensorsOn, sensor);
 
+        // 非主板关键读数按 5 秒更新；扫描进程不持有快照锁，避免 UI 等待系统调用。
+        var processes = SampleProcesses();
+        // 慢速 ACPI 读取同样放在锁外，不能让 UI 在等待快照锁时一起卡住。
+        var temperature = sensorsOn ? sensor.PackageTemperatureC ?? sensor.MaxCoreTemperatureC ?? _acpi.ReadTemperatureC() : null;
+
         lock (_gate)
         {
-            _logicalUsage = logicalUsage ?? _logicalUsage;
+            _logicalUsage = logicalUsage ?? [];
 
-            // 每物理核心使用率取其线程最大值（一线程忙即核心忙）。
+            // 每物理核心取线程最大值；任一线程缺失时核心总量未知，不能冒充空闲。
             for (var i = 0; i < _cores.Count; i++)
             {
-                double usage = 0;
-                foreach (var osIndex in _cores[i].OsIndexes)
-                {
-                    if (logicalUsage is not null && osIndex < logicalUsage.Length)
-                        usage = Math.Max(usage, logicalUsage[osIndex]);
-                }
-
-                _coreUsage[i] = usage;
+                _coreUsage[i] = CoreUsage(logicalUsage, _cores[i].OsIndexes);
 
                 // ── 频率（v1.18.0 分两条口径，两者不可混用）──
                 //   · 显示口径 _coreFreqGhz：传感器逐核 P-state 时钟 → 计数器比值 → 基频。
@@ -485,9 +512,7 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
             LogFrequencySourceOnce(sensor);
 
             // 温度：传感器 → ACPI 温区兜底（传感器关闭时不读取，直接置空 → UI 显示 "-"）。
-            double? temp = null;
-            if (sensorsOn)
-                temp = sensor.PackageTemperatureC ?? sensor.MaxCoreTemperatureC ?? _acpi.ReadTemperatureC();
+            var temp = temperature;
 
             if (temp is { } t && t > 0)
             {
@@ -513,29 +538,48 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
             _driveTemps = sensorsOn ? sensor.DriveTemperatures : [];
             _discreteGpuPower = sensorsOn ? sensor.DiscreteGpuPowerW : null;
             _discreteGpuNames = sensorsOn ? sensor.DiscreteGpuNames : [];
+            _discreteGpuReadings = sensorsOn ? sensor.DiscreteGpuReadings : [];
             _activeFanCount = sensorsOn ? sensor.ActiveFanCount : 0;
             _storageThroughputMbps = sensorsOn ? sensor.StorageThroughputMbps : null;
             _storageBusyPercent = sensorsOn ? sensor.StorageBusyPercent : null;
 
-            // 进程排行（首次调用无增量基准，返回空列表）。
-            try
-            {
-                var top = _ranker.SampleTop(5);
-                if (top.Count > 0)
-                    _topProcesses = top
-                        .Select(p => new ProcessLoadSample
-                        {
-                            Name = p.Name,
-                            UsagePercent = Math.Clamp(p.CpuPercent, 0, 100),
-                            IconKind = MapIconKind(p.Name),
-                        })
-                        .ToList();
-            }
-            catch
-            {
-                // 排行失败沿用上次结果。
-            }
+            if (processes is not null)
+                _topProcesses = processes;
+            _lastSampleTimestamp = capturedTimestamp;
         }
+    }
+
+    private static double CoreUsage(double[]? logicalUsage, int[] osIndexes)
+    {
+        if (logicalUsage is null || osIndexes.Length == 0) return double.NaN;
+        double usage = 0;
+        foreach (var index in osIndexes)
+        {
+            if (index < 0 || index >= logicalUsage.Length || !double.IsFinite(logicalUsage[index])
+                || logicalUsage[index] is < 0 or > 100)
+                return double.NaN;
+            usage = Math.Max(usage, logicalUsage[index]);
+        }
+        return usage;
+    }
+
+    private List<ProcessLoadSample>? SampleProcesses()
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (_lastProcessSampleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastProcessSampleTimestamp, now).TotalSeconds < 5)
+            return null;
+        _lastProcessSampleTimestamp = now;
+        try
+        {
+            // 空列表同样发布，已退出进程不会一直残留。
+            return _ranker.SampleTop(5).Select(p => new ProcessLoadSample
+            {
+                Name = p.Name,
+                UsagePercent = Math.Clamp(p.CpuPercent, 0, 100),
+                IconKind = MapIconKind(p.Name),
+            }).ToList();
+        }
+        catch { return []; }
     }
 
     /// <summary>

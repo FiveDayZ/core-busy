@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="CORE-BUSY 设置"
         Icon="pack://application:,,,/Assets/CoreBusy.ico"
-        Width="700" Height="690"
+        Width="600" Height="560"
         WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource CoreBusyBackgroundBrush}"
@@ -12,7 +12,7 @@
         UseLayoutRounding="True">
 
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="46"
+        <WindowChrome CaptionHeight="36"
                       ResizeBorderThickness="0"
                       GlassFrameThickness="0"
                       CornerRadius="0"
@@ -22,7 +22,7 @@
     <Window.Resources>
         <!--  选项标题 / 说明  -->
         <Style x:Key="OptionLabel" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{StaticResource CoreBusyTextPrimaryBrush}" />
         </Style>
@@ -39,7 +39,7 @@
             <Setter Property="BorderBrush" Value="{DynamicResource CoreBusyBorderWeakBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CaretBrush" Value="{DynamicResource CoreBusyTextPrimaryBrush}" />
-            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Padding" Value="8,4" />
             <Setter Property="FontSize" Value="12.5" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
@@ -54,7 +54,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Root" CornerRadius="6" Padding="12,9"
+                        <Border x:Name="Root" CornerRadius="6" Padding="10,7"
                                 Background="Transparent">
                             <ContentPresenter VerticalAlignment="Center" />
                         </Border>
@@ -82,7 +82,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Root" CornerRadius="6" Padding="12,7"
+                        <Border x:Name="Root" CornerRadius="6" Padding="8,5"
                                 Background="{StaticResource CoreBusyCardBrush}"
                                 BorderBrush="{StaticResource CoreBusyBorderWeakBrush}" BorderThickness="1">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -104,41 +104,7 @@
         </Style>
 
         <!--  勾选项  -->
-        <Style x:Key="OptionCheck" TargetType="CheckBox">
-            <Setter Property="Foreground" Value="{StaticResource CoreBusyTextPrimaryBrush}" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Focusable" Value="False" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="CheckBox">
-                        <StackPanel Orientation="Horizontal">
-                            <Border x:Name="Box" Width="16" Height="16" CornerRadius="4"
-                                    Background="{StaticResource CoreBusyCardBrush}"
-                                    BorderBrush="{StaticResource CoreBusyBorderBrush}" BorderThickness="1"
-                                    VerticalAlignment="Center">
-                                <Path x:Name="Tick" Data="M 0,3.4 L 3.2,6.6 L 9.2,0.6"
-                                      Stroke="White" StrokeThickness="1.8" Stretch="None"
-                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                                      HorizontalAlignment="Center" VerticalAlignment="Center"
-                                      Visibility="Collapsed" />
-                            </Border>
-                            <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center" />
-                        </StackPanel>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource CoreBusyAccentBrush}" />
-                            </Trigger>
-                            <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Box" Property="Background" Value="{StaticResource CoreBusyAccentBrush}" />
-                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource CoreBusyAccentBrush}" />
-                                <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <Style x:Key="OptionCheck" TargetType="CheckBox" BasedOn="{StaticResource CompactCheckBoxStyle}" />
 
         <!--  行内小勾选（进程规则行内使用，字号与间距收紧）  -->
         <Style x:Key="MiniCheck" TargetType="CheckBox" BasedOn="{StaticResource OptionCheck}">
@@ -224,7 +190,7 @@
                                         CornerRadius="6" Margin="0,2,0,0" Padding="3"
                                         MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                         MaxHeight="220">
-                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ScrollViewer Style="{StaticResource CompactScrollViewer}" VerticalScrollBarVisibility="Auto">
                                         <ItemsPresenter />
                                     </ScrollViewer>
                                 </Border>
@@ -267,7 +233,7 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
-            <Setter Property="Padding" Value="24,6" />
+            <Setter Property="Padding" Value="20,5" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -366,12 +332,12 @@
                     </StackPanel>
 
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <CheckBox Style="{StaticResource MiniCheck}" Content="内核强制亲和"
+                        <CheckBox Style="{StaticResource MiniCheck}" Content="内核强制亲和" ToolTip="不能与「仅游戏时生效」同时启用；撤销时解除本工具的作业限制。"
                                   IsChecked="{Binding KernelEnforced, Mode=TwoWay}" />
                         <CheckBox Style="{StaticResource MiniCheck}" Content="磁盘 I/O 降至最低"
                                   IsChecked="{Binding LowerIoPriority, Mode=TwoWay}" />
                         <CheckBox Style="{StaticResource MiniCheck}" Content="仅游戏时生效"
-                                  ToolTip="勾选后该规则只在检测到全屏游戏时套用，退出游戏即恢复默认优先级，日常使用不受影响。需要「常规」页的「启用游戏模式」同时打开。"
+                                  ToolTip="勾选后该规则只在检测到全屏游戏时套用，退出游戏恢复本工具改动前的 CPU / I/O 优先级和亲和性。需要「常规」页的「启用游戏模式」同时打开。"
                                   IsChecked="{Binding GameOnly, Mode=TwoWay}" />
                     </StackPanel>
                 </StackPanel>
@@ -381,7 +347,7 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="46" />
+            <RowDefinition Height="36" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -404,11 +370,11 @@
         <!--  主体：左侧分类导航 + 右侧内容  -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="148" />
+                <ColumnDefinition Width="116" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Background="{StaticResource CoreBusyPanelBrush}" Padding="10,14">
+            <Border Grid.Column="0" Background="{StaticResource CoreBusyPanelBrush}" Padding="8,10">
                 <StackPanel>
                     <RadioButton x:Name="NavGeneral" Style="{StaticResource NavItem}" GroupName="Nav"
                                  Content="常规" IsChecked="True" Checked="OnNavChanged" />
@@ -419,9 +385,9 @@
                 </StackPanel>
             </Border>
 
-            <Grid Grid.Column="1" Margin="18,14,14,0">
+            <Grid Grid.Column="1" Margin="12,10,10,0">
                 <!--  ===== 常规 =====  -->
-                <ScrollViewer x:Name="PaneGeneral" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Style="{StaticResource CompactScrollViewer}" x:Name="PaneGeneral" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,0,4,0">
                         <TextBlock Text="采样周期" Style="{StaticResource OptionLabel}" />
                         <TextBlock Text="周期越短数据越实时，本工具自身开销也略高。" Style="{StaticResource OptionHint}" Margin="0,3,0,9" />
@@ -434,31 +400,31 @@
                                          Content="2000 毫秒 · 低开销" />
                         </UniformGrid>
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <CheckBox x:Name="SensorsCheck" Style="{StaticResource OptionCheck}"
                                   Content="启用硬件传感器（温度 / 功耗 / 频率 / 风扇）" />
                         <TextBlock Text="传感器读取需以管理员身份运行；关闭后本工具占用更低，温度 / 功耗 / 风扇显示为 —。"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
 
-                        <CheckBox x:Name="GameCheck" Style="{StaticResource OptionCheck}" Margin="0,14,0,0"
+                        <CheckBox x:Name="GameCheck" Style="{StaticResource OptionCheck}" Margin="0,10,0,0"
                                   Content="启用游戏模式（全屏 / 无边框全屏检测）" />
                         <TextBlock Text="游戏模式下「性能优化」页的联动预设才会生效。"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
 
-                        <CheckBox x:Name="CloseToTrayCheck" Style="{StaticResource OptionCheck}" Margin="0,14,0,0"
+                        <CheckBox x:Name="CloseToTrayCheck" Style="{StaticResource OptionCheck}" Margin="0,10,0,0"
                                   Content="关闭窗口时最小化到托盘（通知区域）" />
                         <TextBlock Text="勾选后点击关闭仅隐藏窗口，托盘图标双击恢复显示、右键退出；不勾选则直接退出。"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
 
-                        <CheckBox x:Name="AutoStartCheck" Style="{StaticResource OptionCheck}" Margin="0,14,0,0"
+                        <CheckBox x:Name="AutoStartCheck" Style="{StaticResource OptionCheck}" Margin="0,10,0,0"
                                   Content="开机自动启动" />
                         <TextBlock Text="写入当前用户的注册表 Run 项（无需管理员权限），可在任务管理器「启动应用」页随时关闭；"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
                         <TextBlock Text="注册表为唯一事实来源 —— 在别处手动禁用后，这里打开时会如实显示未启用。"
                                    Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <!--  软件更新（v1.31.0）：检查只读 GitHub Releases，不采集不上传任何数据。  -->
                         <TextBlock Text="软件更新" Style="{StaticResource OptionLabel}" />
@@ -475,7 +441,7 @@
                         <TextBlock x:Name="UpdateStatusText" Style="{StaticResource OptionHint}" Margin="25,8,0,0"
                                    TextWrapping="Wrap" />
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <!--  遥测上报（v1.34.0）：默认关闭；开启后仅向自建后台上报统计量。  -->
                         <TextBlock Text="遥测上报" Style="{StaticResource OptionLabel}" />
@@ -505,7 +471,7 @@
                 </ScrollViewer>
 
                 <!--  ===== 外观 =====  -->
-                <ScrollViewer x:Name="PaneAppearance" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Style="{StaticResource CompactScrollViewer}" x:Name="PaneAppearance" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,0,4,0">
                         <TextBlock Text="主题" Style="{StaticResource OptionLabel}" />
                         <TextBlock Text="自动跟随 CPU 厂商；也可手动锁定（规范 §7）。" Style="{StaticResource OptionHint}" Margin="0,3,0,9" />
@@ -518,7 +484,7 @@
                                          Content="AMD Red" />
                         </UniformGrid>
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <TextBlock Text="核心分区" Style="{StaticResource OptionLabel}" />
                         <TextBlock Text="规范：Intel 混合显 P/E，AMD 显 CPU Core / CCD（不出现 P-Core / E-Core）。设计稿：两段 P/E 写法。"
@@ -531,19 +497,19 @@
                         </UniformGrid>
 
                         <TextBlock Text="主题与核心分区在窗口构建前生效，修改后需重启应用。"
-                                   Style="{StaticResource OptionHint}" Margin="0,14,0,0" />
+                                   Style="{StaticResource OptionHint}" Margin="0,10,0,0" />
                     </StackPanel>
                 </ScrollViewer>
 
                 <!--  ===== 性能优化 =====  -->
-                <ScrollViewer x:Name="PaneOptimize" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Style="{StaticResource CompactScrollViewer}" x:Name="PaneOptimize" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,0,4,0">
                         <CheckBox x:Name="OptimizeCheck" Style="{StaticResource OptionCheck}"
                                   Content="启用 CPU 核心优化" />
                         <TextBlock x:Name="OptimizeStatusText" Style="{StaticResource OptionHint}" Margin="25,5,0,0"
                                    Text="正在读取硬件能力…" />
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <TextBlock Text="电源策略" Style="{StaticResource OptionLabel}" />
                         <TextBlock Text="改动当前电源方案中的核心停放 / 能源性能偏好 / 处理器最大状态。首次应用前会自动备份原始值，可随时还原。插电与电池两套值会同时写入。"
@@ -566,10 +532,10 @@
                             <Button x:Name="PowerRestoreButton" Grid.Column="1" Content="还原原始值"
                                     Style="{StaticResource MiniButton}" Click="OnRestorePower" />
                         </Grid>
-                        <TextBlock Text="「性能优先」会解除核心停放并把 EPP 拉到满性能，代价是待机功耗与温度上升（约 +10~30W / +5~10℃）；笔记本电池模式下请谨慎。"
+                        <TextBlock Text="「性能优先」会解除核心停放并把 EPP 拉到满性能，可能增加功耗与温度，实际变化取决于硬件和负载；笔记本电池模式下请谨慎。"
                                    Style="{StaticResource OptionHint}" Margin="0,8,0,0" />
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <TextBlock Text="进程规则" Style="{StaticResource OptionLabel}" />
                         <TextBlock Text="按进程名套用核心亲和性与优先级，同名新启动的进程会自动接管。系统关键进程（csrss / lsass / svchost 等）一律拒绝，避免整机假死。"
@@ -581,7 +547,7 @@
                             <StackPanel>
                                 <TextBlock Text="一键降级后台负载" FontSize="12" FontWeight="SemiBold"
                                            Foreground="{StaticResource CoreBusyTextPrimaryBrush}" />
-                                <TextBlock Text="把常见的后台重负载整体降到「低于标准」优先级，并把磁盘 I/O 压到最低。这是本页最有效的用法 —— 提升来自「压制抢资源的进程」，而不是给前台应用提权。"
+                                <TextBlock Text="把常见的后台重负载整体降到「低于标准」优先级，并把磁盘 I/O 压到最低。仅在后台存在资源竞争时可能改善前台响应；也可能拖慢构建、同步和录制，请按需选择。"
                                            Style="{StaticResource OptionHint}" Margin="0,4,0,8" />
                                 <ItemsControl x:Name="PresetList">
                                     <ItemsControl.ItemsPanel>
@@ -626,7 +592,7 @@
                         <TextBlock x:Name="RulesEmptyText" Style="{StaticResource OptionHint}" Margin="2,4,0,0"
                                    Text="尚未添加规则。可从上方的类别一键添加，或选一个正在运行的进程逐条添加。" />
 
-                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,16,0,14" />
+                        <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 
                         <TextBlock Text="游戏模式联动" Style="{StaticResource OptionLabel}" />
                         <CheckBox x:Name="GameOptimizeCheck" Style="{StaticResource OptionCheck}" Margin="0,8,0,0"
@@ -666,7 +632,7 @@
 
         <!--  操作区  -->
         <Border Grid.Row="2" Background="{StaticResource CoreBusyPanelBrush}"
-                Padding="18,12" Margin="0,18,0,0">
+                Padding="12,9" Margin="0,10,0,0">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="取消" Style="{StaticResource GhostButton}" Click="OnCancel" IsCancel="True" />
                 <Button Content="确定" Style="{StaticResource PrimaryButton}" Margin="10,0,0,0"

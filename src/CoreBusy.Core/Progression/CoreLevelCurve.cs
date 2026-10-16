@@ -30,7 +30,7 @@ namespace CoreBusy.Core.Progression;
 /// </para>
 /// <para>
 /// <b>标定方式。</b><see cref="R"/> 不是手调的，而是反解出来的：令
-/// <c>C(99)/60 = 357,408 核·时</c>（满载机约 6 年），对 <c>r</c> 二分求解。
+/// <c>C(99)/60 = 876 核·时</c>（每天 8 小时、单核平均 30%，365 天），对 <c>r</c> 二分求解。
 /// 唯一的标定输入是"满级累计核·时"，其余全部由公式派生。
 /// </para>
 /// </remarks>
@@ -46,15 +46,12 @@ public static class CoreLevelCurve
     /// 等级公共倍率。由 <see cref="TargetTotalCoreHours"/> 反解得到。
     /// </summary>
     /// <remarks>
-    /// <b>必须存满 17 位有效数字。</b>总量对 <c>r</c> 极敏感：
-    /// 只存 6 位（1.13479）时满级总量差<b>61.5 核·时</b>（相对误差 1.7e-4）；
-    /// 9 位差 0.006；14 位起才进入1e-6 区间。标定输入是"满级累计核·时"，
-    /// 把它标到 0.0001 核·时以内才算真的标上了。
+    /// 保留双精度常量的有效位；该倍率由满级总量反解，不在运行时迭代求解。
     /// </remarks>
-    public const double R = 1.1347921802051704;
+    public const double R = 1.0582139452736454;
 
-    /// <summary>满级（Lv.99）累计经验 = 357,408 核·时 ≈ 满载机 6 年。</summary>
-    public const double TargetTotalCoreHours = 357_408.0;
+    /// <summary>满级（Lv.99）= 876 核·时：每天 8 小时、单核平均 30% 时约一年。</summary>
+    public const double TargetTotalCoreHours = 876.0;
 
     /// <summary>序列因子<code>S = T0 / (r - 1)</code>，预先算好避免每次重算。</summary>
     private static readonly double SeriesFactor = T0 / (R - 1.0);

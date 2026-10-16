@@ -15,7 +15,7 @@ public sealed record CpuCoreSnapshot
     /// <summary>所属 CCD 序号（非多 CCD 平台为 null，规范 §50）。</summary>
     public int? CcdIndex { get; init; }
 
-    /// <summary>使用率（0-100）。</summary>
+    /// <summary>使用率（0-100）；NaN 表示该次采样不可用。</summary>
     public double UsagePercent { get; init; }
 
     /// <summary>

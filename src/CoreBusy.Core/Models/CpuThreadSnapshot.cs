@@ -19,7 +19,7 @@ public sealed record CpuThreadSnapshot
     /// <summary>核内线程序号（从 0 起）。</summary>
     public int Index { get; init; }
 
-    /// <summary>使用率（0-100）。</summary>
+    /// <summary>使用率（0-100）；NaN 表示该次采样不可用。</summary>
     public double UsagePercent { get; init; }
 
     /// <summary>当前频率（GHz）。</summary>

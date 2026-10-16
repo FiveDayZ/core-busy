@@ -8,7 +8,7 @@ using CoreBusy.Core.Models;
 /// <summary>
 /// CPU 品牌主题装配（Fluent 2 深色令牌）。
 /// <para>
-/// 视觉层次由<b>明度分层</b>承担：背景 #1A1A1A → 面板 #232323 → 卡片 #2B2B2B → 描边 #3D3D3D。
+/// 视觉层次由<b>明度分层</b>承担：背景 #141B18 → 面板 #1C2722 → 卡片 #27332D → 描边 #42554A。
 /// 品牌差异只体现在<b>强调色</b>（AMD 红 / Intel 蓝 / 中性青），不再使用径向辉光，
 /// 面板也不再半透明 —— 后者会让背景色透进内容区，把层次压平。
 /// </para>
@@ -18,16 +18,16 @@ using CoreBusy.Core.Models;
 public static class BrandTheme
 {
     // ===== 中性基底（三品牌共用） =====
-    private const string BgHex = "#1A1A1A";
-    private const string PanelHex = "#232323";
-    private const string CardHex = "#2B2B2B";
-    private const string HoverHex = "#333333";
-    private const string BorderHex = "#3D3D3D";
-    private const string BorderWeakHex = "#2E2E2E";
-    private const string TrackHex = "#3A3A3A";
-    private const string TextPrimaryHex = "#F2F2F2";
-    private const string TextSecondaryHex = "#A6A6A6";
-    private const string TextWeakHex = "#737373";
+    private const string BgHex = "#141B18";
+    private const string PanelHex = "#1C2722";
+    private const string CardHex = "#27332D";
+    private const string HoverHex = "#303F37";
+    private const string BorderHex = "#42554A";
+    private const string BorderWeakHex = "#35443B";
+    private const string TrackHex = "#3A4B40";
+    private const string TextPrimaryHex = "#EFF4F0";
+    private const string TextSecondaryHex = "#B0BDB4";
+    private const string TextWeakHex = "#8B9D90";
 
     // ===== 语义色（跨品牌一致） =====
     private const string BlueHex = "#6FA8DC";

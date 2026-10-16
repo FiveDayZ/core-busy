@@ -27,6 +27,13 @@ public interface IPowerPolicyService
     /// <summary>还原到最近一次备份的状态。</summary>
     bool Restore(out string error);
 
+    /// <summary>临时策略使用独立备份，不能覆盖用户固定预设的原始备份。</summary>
+    bool ApplyTemporary(PowerPreset preset, out string error) => Apply(preset, out error);
+    /// <summary>临时应用或其回滚失败后，仍需恢复的独立备份。</summary>
+    bool HasTemporaryBackup => false;
+    bool RestoreTemporary(out string error) => Restore(out error);
+    void DiscardTemporaryBackup() { }
+
     /// <summary>是否存在可还原的备份。</summary>
     bool HasBackup { get; }
 }

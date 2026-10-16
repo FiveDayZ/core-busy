@@ -74,7 +74,7 @@ public sealed class ProcessOptimizationRule
     /// <summary>目标进程名（含 .exe，大小写不敏感）。</summary>
     public string ProcessName { get; set; } = string.Empty;
 
-    /// <summary>是否启用该规则。停用后不再套用，但不会回滚已生效的设置。</summary>
+    /// <summary>是否启用该规则。停用后恢复本工具改动前的设置。</summary>
     public bool Enabled { get; set; } = true;
 
     /// <summary>核心亲和性。</summary>
@@ -93,8 +93,8 @@ public sealed class ProcessOptimizationRule
     /// <summary>
     /// 用 Job Object 在内核层强制亲和。
     /// 普通 <c>SetProcessAffinityMask</c> 是进程级设置，进程自己（或其子进程）可以再改回去；
-    /// 作业对象限制由内核强制，目标进程无法逃逸。代价是无法撤销（进程退出才释放），
-    /// 因此界面上需要显式提示。
+    /// 作业对象限制由内核强制，目标进程无法逃逸。作业关联本身不能撤销，
+    /// 因此不允许与「仅游戏时生效」组合使用；撤销规则时解除本工具设置的作业限制。
     /// </summary>
     public bool KernelEnforced { get; set; }
 
@@ -105,8 +105,8 @@ public sealed class ProcessOptimizationRule
     /// 仅在游戏模式激活期间套用（v1.13.0）。
     /// <para>
     /// 存在意义：后台负载降级对开发机是有代价的 —— Docker 与编译器被压到「低于标准」
-    /// 会明显拖慢构建。勾上此项后，规则只在检测到全屏游戏时生效，退出游戏即恢复默认
-    /// 优先级，日常开发完全不受影响；不勾则是常驻生效。
+    /// 会明显拖慢构建。勾上此项后，规则只在检测到全屏游戏时生效，退出游戏恢复改动前的
+    /// 进程参数；不勾则是常驻生效。
     /// </para>
     /// <para>
     /// 依赖游戏检测：若「常规」页的「启用游戏模式」被关掉，或游戏检测器不可用，
@@ -157,7 +157,7 @@ public sealed record PowerPolicyState(
 /// </summary>
 public sealed class OptimizationSettings
 {
-    /// <summary>总开关。关闭后停止新增套用（已生效的亲和性不主动回滚，避免扰动正在跑的进程）。</summary>
+    /// <summary>总开关。关闭后停止套用并恢复本工具改动前的进程参数。</summary>
     public bool Enabled { get; set; }
 
     /// <summary>进程规则表。</summary>

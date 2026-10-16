@@ -259,6 +259,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             GpuUtilizationPercent = gpu.UtilizationPercent,
             DiscreteGpuPowerW = gpu.DiscretePowerW,
             DiscreteGpuNames = gpu.DiscreteNames,
+            DiscreteGpuReadings = gpu.Readings,
             DriveTemperatureC = storage.Temperatures.Count > 0 ? storage.Temperatures.Max(d => d.TemperatureC) : null,
             DriveTemperatures = storage.Temperatures,
             StorageThroughputMbps = storage.ThroughputMbps,
@@ -291,7 +292,8 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         double? TemperatureC,
         double? UtilizationPercent,
         double? DiscretePowerW,
-        IReadOnlyList<string> DiscreteNames);
+        IReadOnlyList<string> DiscreteNames,
+        IReadOnlyList<GpuPowerReading> Readings);
 
     private GpuReading ReadGpuSensors()
     {
@@ -300,6 +302,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             GpuNodeReading? mainCard = null;
             double? discretePower = null;
             var discreteNames = new List<string>();
+            var readings = new List<GpuPowerReading>();
 
             foreach (var hardware in _computer.Hardware)
             {
@@ -330,6 +333,7 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                     continue;
 
                 discreteNames.Add(name);
+                readings.Add(new GpuPowerReading(name, power, usage));
 
                 // 只做收集（有限、非负、上界已由 IsPlausibleGpuPower 守卫），
                 // "0 W 是真读数还是失效读数"的判定交给功耗模型统一做 —— 那需要占用率，
@@ -339,11 +343,13 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             }
 
             var main = mainCard;
-            return new GpuReading(main?.TemperatureC, main?.UtilizationPercent, discretePower, discreteNames);
+            // 聚合字段仅在全部卡功率可读时提供；逐卡字段始终保留缺失项。
+            if (readings.Any(r => r.PowerWatt is null)) discretePower = null;
+            return new GpuReading(main?.TemperatureC, main?.UtilizationPercent, discretePower, discreteNames, readings);
         }
         catch
         {
-            return new GpuReading(null, null, null, []);
+            return new GpuReading(null, null, null, [], []);
         }
     }
 
@@ -359,7 +365,6 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         double? fallbackTemp = null;
         double? coreUsage = null;
         double? preferredPower = null;
-        double? anyPower = null;
 
         foreach (var sensor in hardware.Sensors)
         {
@@ -384,22 +389,18 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
             }
             else if (sensor.SensorType == SensorType.Power && IsPlausibleGpuPower(value))
             {
-                // 同一块卡可能有多个功率传感器（整卡 / 核心 / 显存）。整卡口径优先，
-                // 其余取最大值兜底 —— 显存功率是整卡的一部分，取大不会小于真实整卡。
+                // 核心/显存是部分电源域，不能把其中最大值冒充整卡功率。
                 if (IsWholeCardPowerSensor(sensor.Name))
                     preferredPower = Math.Max(preferredPower ?? 0, value);
-                else
-                    anyPower = Math.Max(anyPower ?? 0, value);
             }
         }
 
-        return (coreTemp ?? hotSpotTemp ?? fallbackTemp, coreUsage, preferredPower ?? anyPower);
+        return (coreTemp ?? hotSpotTemp ?? fallbackTemp, coreUsage, preferredPower);
     }
 
-    /// <summary>是否为"整卡"口径的功率传感器（NVIDIA 用 GPU Package，AMD 用 GPU Core/Board）。</summary>
+    /// <summary>是否为聚合功率域。Core/Memory/PPT 均不能直接冒充整卡。</summary>
     private static bool IsWholeCardPowerSensor(string name)
         => name.Contains("Package", StringComparison.OrdinalIgnoreCase)
-           || name.Contains("Core", StringComparison.OrdinalIgnoreCase)
            || name.Contains("Board", StringComparison.OrdinalIgnoreCase)
            || name.Contains("Total", StringComparison.OrdinalIgnoreCase);
 

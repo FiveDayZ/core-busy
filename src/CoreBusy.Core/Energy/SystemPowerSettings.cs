@@ -29,7 +29,7 @@ public sealed record SystemPowerSettings
     /// <summary>独显无功率传感器且型号不在表内时的整卡额定功率兜底（W，默认 150，合法 0–600）。</summary>
     public double GpuFallbackWatts { get; init; } = SystemPowerEstimator.DefaultGpuFallbackWatts;
 
-    /// <summary>内存每 GB 的**满载**功耗系数（W/GB，默认 0.392，合法 0–2）。</summary>
+    /// <summary>内存容量参考系数（W/GiB，默认 0.392，合法 0–2）；桌面基线另乘 DramBaselineFactor。</summary>
     public double DramWattsPerGb { get; init; } = SystemPowerEstimator.DefaultDramWattsPerGb;
 
     /// <summary>全默认设置。</summary>

@@ -8,6 +8,12 @@ using CoreBusy.Core.Models;
 /// </summary>
 public interface ICpuMonitorService
 {
+    /// <summary>初始化失败原因；可用的监控返回 null。</summary>
+    string? UnavailableReason => null;
+
+    /// <summary>取得一致采样帧；模拟数据源可使用默认实现。</summary>
+    CpuMonitorFrame GetFrame() => new(GetSnapshot(), GetCoreSnapshots());
+
     /// <summary>CPU 静态信息（名称、厂商、核心/线程数）。</summary>
     CpuInfo GetCpuInfo();
 

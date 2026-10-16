@@ -10,8 +10,7 @@ public static class SettingsStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private static string DirectoryPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CORE-BUSY");
+    private static string DirectoryPath => EnergyHistoryStore.DataDirectory;
 
     private static string FilePath => Path.Combine(DirectoryPath, "settings.json");
 
@@ -22,7 +21,7 @@ public static class SettingsStore
         {
             if (File.Exists(FilePath))
             {
-                var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
+                var settings = JsonSerializer.Deserialize<AppSettings>(JsonFile.ReadAllText(FilePath));
                 if (settings is not null)
                     return settings;
             }
@@ -39,10 +38,11 @@ public static class SettingsStore
         try
         {
             Directory.CreateDirectory(DirectoryPath);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, JsonOptions));
+            JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(settings, JsonOptions));
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            AppLog.Write("settings save", ex);
         }
     }
 }

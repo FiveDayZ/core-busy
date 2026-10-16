@@ -63,6 +63,20 @@ internal static class ProcessOptimizationNative
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetPriorityClass(IntPtr process, uint priorityClass);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint GetPriorityClass(IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessAffinityMask(IntPtr process, out UIntPtr processMask, out UIntPtr systemMask);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+
+    [DllImport("ntdll.dll")]
+    internal static extern int NtQueryInformationProcess(IntPtr process, int informationClass, out int information, int informationLength, out int returnLength);
+
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     internal static extern IntPtr CreateJobObject(IntPtr jobAttributes, string? name);
 

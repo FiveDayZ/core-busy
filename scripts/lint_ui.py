@@ -24,16 +24,12 @@ APP = os.path.join(REPO, "src", "CoreBusy.App")
 
 # 绑定校验覆盖的 XAML：这些文件的 DataContext 是 ViewModel。
 BOUND_XAML = [
-    r"Views\MainWindow.xaml",
-    r"Views\SettingsWindow.xaml",
-    r"Controls\CpuOverviewPanel.xaml",
-    r"Controls\StatusBarControl.xaml",
-    r"Controls\RankingPanel.xaml",
-    r"Controls\ProcessListPanel.xaml",
-    r"Controls\CpuCoreTile.xaml",
-    r"Controls\CpuSummaryCard.xaml",
-    r"Controls\SectionHeader.xaml",
-    r"Controls\PowerCalendarPanel.xaml",
+    "Views/MainWindow.xaml",
+    "Views/SettingsWindow.xaml",
+    "Controls/StatusBarControl.xaml",
+    "Controls/CpuCoreTile.xaml",
+    "Controls/CpuSummaryCard.xaml",
+    "Controls/SectionHeader.xaml",
 ]
 
 # 相对源绑定（如 RelativeSource AncestorType=Button 的 Foreground）不查成员表。
@@ -117,8 +113,9 @@ def check_bindings() -> int:
     members = collect_members()
     checked = 0
     for rel in BOUND_XAML:
-        path = os.path.join(APP, rel)
+        path = os.path.join(APP, *rel.split("/"))
         if not os.path.exists(path):
+            failures.append("绑定检查目标缺失: %s" % rel)
             continue
         with open(path, encoding="utf-8-sig") as fh:
             content = fh.read()
@@ -133,8 +130,11 @@ def check_bindings() -> int:
 
 
 def main() -> int:
-    check_xaml_structure()
-    check_bindings()
+    failures.clear()
+    if check_xaml_structure() == 0:
+        failures.append("未发现任何 XAML 文件")
+    if check_bindings() == 0:
+        failures.append("未校验任何绑定")
     print("-" * 52)
     if failures:
         print("FAILED (%d):" % len(failures))

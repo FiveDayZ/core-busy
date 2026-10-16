@@ -19,8 +19,7 @@ public static class RuntimeStatsStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private static string DirectoryPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CORE-BUSY", "stats");
+    private static string DirectoryPath => Path.Combine(EnergyHistoryStore.DataDirectory, "stats");
 
     private static string FilePath => Path.Combine(DirectoryPath, "runtime.json");
 
@@ -42,7 +41,7 @@ public static class RuntimeStatsStore
             if (!File.Exists(FilePath))
                 return (0, 0);
 
-            var entry = JsonSerializer.Deserialize<RuntimeEntry>(File.ReadAllText(FilePath));
+            var entry = JsonSerializer.Deserialize<RuntimeEntry>(JsonFile.ReadAllText(FilePath));
             double Total(double v) => double.IsFinite(v) && v > 0 ? v : 0;
 
             return entry is null ? (0, 0) : (Total(entry.TotalSeconds), Total(entry.LastSessionSeconds));
@@ -62,7 +61,7 @@ public static class RuntimeStatsStore
         try
         {
             Directory.CreateDirectory(DirectoryPath);
-            File.WriteAllText(
+            JsonFile.WriteAllText(
                 FilePath,
                 JsonSerializer.Serialize(
                     new RuntimeEntry

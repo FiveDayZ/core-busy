@@ -21,8 +21,7 @@ public static class StatsStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private static string DirectoryPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CORE-BUSY", "stats");
+    private static string DirectoryPath => Path.Combine(EnergyHistoryStore.DataDirectory, "stats");
 
     private static string FilePath(DateTime day) => Path.Combine(DirectoryPath, $"stats-{day:yyyy-MM-dd}.json");
 
@@ -35,7 +34,7 @@ public static class StatsStore
             if (!File.Exists(path))
                 return null;
 
-            return JsonSerializer.Deserialize<Dictionary<int, CoreStatEntry>>(File.ReadAllText(path));
+            return JsonSerializer.Deserialize<Dictionary<int, CoreStatEntry>>(JsonFile.ReadAllText(path));
         }
         catch (Exception)
         {
@@ -48,7 +47,7 @@ public static class StatsStore
         try
         {
             Directory.CreateDirectory(DirectoryPath);
-            File.WriteAllText(FilePath(DateTime.Today), JsonSerializer.Serialize(stats, JsonOptions));
+            JsonFile.WriteAllText(FilePath(DateTime.Today), JsonSerializer.Serialize(stats, JsonOptions));
         }
         catch (Exception)
         {

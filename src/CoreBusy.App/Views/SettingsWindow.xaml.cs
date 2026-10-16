@@ -125,7 +125,8 @@ public partial class SettingsWindow : Window
         optimization = settings.Optimization;
 
         OptimizeCheck.IsChecked = optimization.Enabled;
-        OptimizeStatusText.Text = _optimization?.StatusDetail ?? "优化服务不可用（未接线）";
+        OptimizeStatusText.Text = _optimization is null ? "优化服务不可用"
+            : _optimization.StatusDetail + "\n" + _optimization.LastDetail;
 
         // 规则列表。
         foreach (var rule in optimization.Rules)
@@ -283,8 +284,14 @@ public partial class SettingsWindow : Window
 
         // 「自定义核心」的落盘前复核：服务端套用时还会再校验一次，但在这里拦下
         // 能让用户当场修正，而不是关掉窗口后规则静默不生效（至少保留 1 个核心）。
+        if (_rules.Any(r => r.GameOnly && r.KernelEnforced))
+        {
+            MessageBox.Show(this, "「仅游戏时生效」不能与「内核强制亲和」同时启用，请取消其中一项。", "CORE-BUSY",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         var brokenRule = _rules.FirstOrDefault(r =>
-            r.Affinity == CoreAffinityMode.Custom && r.CustomAffinityMask == 0);
+            r.Affinity == CoreAffinityMode.Custom && (_optimization?.ValidateCustomMask(r.CustomAffinityMask) is not null || r.CustomAffinityMask == 0));
         if (brokenRule is not null)
         {
             MessageBox.Show(
@@ -297,7 +304,7 @@ public partial class SettingsWindow : Window
         }
 
         var gameAffinity = _affinityModes[Math.Clamp(GameAffinityCombo.SelectedIndex, 0, _affinityModes.Count - 1)];
-        if (gameAffinity == CoreAffinityMode.Custom && _gameCustomMask == 0)
+        if (gameAffinity == CoreAffinityMode.Custom && (_optimization?.ValidateCustomMask(_gameCustomMask) is not null || _gameCustomMask == 0))
         {
             MessageBox.Show(
                 this,
@@ -356,7 +363,9 @@ public partial class SettingsWindow : Window
         };
 
         // 开机启动（v1.26.5）：在保存设置的同一动作里落注册表，勾选状态即生效。
-        Services.AutoStartService.Set(AutoStartCheck.IsChecked == true);
+        var autoStart = AutoStartCheck.IsChecked == true;
+        if (autoStart != Services.AutoStartService.IsEnabled())
+            Services.AutoStartService.Set(autoStart);
 
         DialogResult = true;
     }

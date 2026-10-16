@@ -31,33 +31,21 @@ public sealed class WindowsCpuOptimizationService : ICpuOptimizationService, IDi
     private readonly AffinityMaskBuilder _builder;
     private readonly bool _elevated;
 
-    /// <summary>pid → 上次套用结果的签名。签名相同即跳过，避免每秒重复调用系统 API。</summary>
-    private readonly Dictionary<int, string> _appliedByPid = [];
-
-    /// <summary>
-    /// 已创建的作业对象句柄。**必须持有**：一旦关闭句柄，作业被销毁，
-    /// 内核强制的亲和性限制会随之消失，规则等于白设。
-    /// </summary>
-    private readonly List<IntPtr> _jobs = [];
-
-    /// <summary>已经被作业对象接管的 pid（重复 AssignProcessToJobObject 会失败）。</summary>
-    private readonly HashSet<int> _jobAssigned = [];
-
-    /// <summary>
-    /// 因「仅游戏时生效」规则而被改过调度参数的 pid（v1.13.0）。
-    /// 退出游戏时必须逐个恢复 —— 否则进程会带着被压低的优先级一直跑下去，
-    /// 表现为"关掉游戏后 Docker 还是慢"，而界面上没有任何线索指向本工具。
-    /// </summary>
-    private readonly HashSet<int> _gameOnlyPids = [];
-
-    /// <summary>上一次的「是否处于游戏模式」。用于识别边沿，并据此绕过节流立即响应。</summary>
-    private bool _lastGameModeActive;
-
+    // 每项保存进程创建时间，PID 复用不能把旧进程的备份写到新进程。
+    private sealed record ProcessState(long Created, UIntPtr? Affinity, uint? Priority, int? Io);
+    private sealed class AppliedProcess(ProcessState original, string signature)
+    {
+        public ProcessState Original = original;
+        public string Signature = signature;
+        public IntPtr Job;
+    }
+    private readonly Dictionary<int, AppliedProcess> _rules = [];
+    private readonly Dictionary<int, AppliedProcess> _games = [];
     private DateTime _lastScanUtc = DateTime.MinValue;
-    private int? _gamePid;
-
-    /// <summary>最近一次套用的可读摘要，供状态栏/日志取证。</summary>
-    public string LastDetail { get; private set; } = string.Empty;
+    private DateTime _lastGameScanUtc = DateTime.MinValue;
+    private string _settingsSignature = "";
+    private string _gameSignature = "";
+    public string LastDetail { get; private set; } = "尚未套用进程规则";
 
     public WindowsCpuOptimizationService()
     {
@@ -123,395 +111,289 @@ public sealed class WindowsCpuOptimizationService : ICpuOptimizationService, IDi
         return names.ToList();
     }
 
-    /// <summary>
-    /// 重扫节流后的规则套用；游戏模式等需要即时生效的场景请走 <see cref="ApplyGameMode"/>。
-    /// <para>
-    /// <paramref name="gameModeActive"/> 由调用方提供（见接口注释）。它发生翻转时
-    /// <b>绕过节流</b>立即扫描一次：节流的存在意义是省掉"亲和性设好后反复确认"的开销，
-    /// 而游戏进出恰恰是最需要立刻响应的时刻 —— 等一个节流周期，表现为"切回桌面后
-    /// 后台任务还要再被压几秒才恢复正常"。
-    /// </para>
-    /// </summary>
     public int ApplyRulesNow(OptimizationSettings settings, bool gameModeActive)
     {
+        var active = settings.Rules.Where(r => settings.Enabled && r.Enabled && HasAction(r)
+            && !string.IsNullOrWhiteSpace(r.ProcessName) && (!r.GameOnly || gameModeActive))
+            .GroupBy(r => SystemCriticalProcesses.Normalize(r.ProcessName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+        var signature = $"{settings.Enabled}|{gameModeActive}|" + string.Join(";", active.Select(p => p.Key + ":" + Signature(p.Value)));
         var now = DateTime.UtcNow;
-        var edge = gameModeActive != _lastGameModeActive;
-        if (!edge && (now - _lastScanUtc).TotalSeconds < ScanIntervalSeconds)
+        if (signature == _settingsSignature && (now - _lastScanUtc).TotalSeconds < ScanIntervalSeconds)
             return 0;
-
         _lastScanUtc = now;
+        _settingsSignature = signature;
+        if (_gameSignature.Length == 0)
+            foreach (var pid in _games.Keys.ToArray()) RestoreTracked(_games, pid);
 
-        if (!settings.Enabled || !IsSupported)
+        // 删除、停用、编辑规则都先撤销旧动作；恢复失败的备份保留到下一轮重试。
+        foreach (var pair in _rules.ToArray())
         {
-            // 总开关被关掉时也要撤销仅游戏规则的残留：否则用户以为"关了就不影响"，
-            // 实际上进程还带着被压低的优先级在跑，而界面上没有任何线索指向本工具。
-            RevertGameOnlyRules("optimization disabled");
-            _lastGameModeActive = gameModeActive;
-            return 0;
-        }
-
-        if (edge && !gameModeActive)
-            RevertGameOnlyRules("game mode exit");
-
-        _lastGameModeActive = gameModeActive;
-
-        var active = settings.Rules
-            .Where(r => r.Enabled && !string.IsNullOrWhiteSpace(r.ProcessName) && HasAction(r))
-            .Where(r => !r.GameOnly || gameModeActive)
-            .ToList();
-
-        if (active.Count == 0)
-        {
-            _appliedByPid.Clear();
-            return 0;
-        }
-
-        var byName = new Dictionary<string, ProcessOptimizationRule>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in active)
-            byName[SystemCriticalProcesses.Normalize(rule.ProcessName)] = rule;
-
-        var appliedCount = 0;
-        var seen = new HashSet<int>();
-
-        foreach (var process in Process.GetProcesses())
-        {
-            // rule / pid 必须在 try 之外声明：try 块内的局部变量出了块就失效，
-            // 而后续的套用逻辑要用到它们。
-            ProcessOptimizationRule? rule = null;
-            int pid;
             try
             {
-                pid = process.Id;
-                var name = SystemCriticalProcesses.Normalize(process.ProcessName);
-                if (!byName.TryGetValue(name, out rule))
-                    continue;
+                using var process = FindProcess(pair.Key);
+                if (process is null || !active.TryGetValue(process.ProcessName, out var rule)
+                    || pair.Value.Signature != Signature(rule))
+                    RestoreTracked(_rules, pair.Key);
             }
-            catch
-            {
-                continue;
-            }
-            finally
-            {
-                process.Dispose();
-            }
-
-            if (rule is null)
-                continue;
-
-            seen.Add(pid);
-            var signature = Signature(rule);
-
-            // 签名一致说明该进程当前状态就是规则要的状态，无需重复调用。
-            if (_appliedByPid.TryGetValue(pid, out var previous) && previous == signature)
-                continue;
-
-            if (TryApplyRule(rule, pid, out var error))
-            {
-                _appliedByPid[pid] = signature;
-                appliedCount++;
-
-                // 记下"这次改动是仅游戏规则的产物"。规则由仅游戏改成常驻时要移除，
-                // 否则退出游戏会把一条已经变成常驻的规则一起撤掉。
-                if (rule.GameOnly)
-                    _gameOnlyPids.Add(pid);
-                else
-                    _gameOnlyPids.Remove(pid);
-
-                // 取证行：没有它，"规则到底有没有真的套上"就只能靠界面猜。
-                // 重复套用已被上面的签名比对挡掉，因此这行不会刷屏 ——
-                // 每个 (进程, 规则内容) 组合一生只写一次。
-            }
-            else
-            {
-                // 失败也记签名：否则每个扫描周期都会重试同一条注定失败的规则并刷屏日志。
-                // 代价是瞬时失败（进程刚创建、句柄尚未就绪）不会自动重试——
-                // 对亲和性这类常驻设置，用户重新触发一次即可，比日志被淹没划算。
-                _appliedByPid[pid] = "\u0001" + signature;
-                if (previous != "\u0001" + signature)
-                    LastDetail = $"{rule.ProcessName}: {error}";
-            }
+            catch (InvalidOperationException) { RestoreTracked(_rules, pair.Key); }
+            catch (System.ComponentModel.Win32Exception) { RestoreTracked(_rules, pair.Key); }
         }
+        if (!settings.Enabled || !IsSupported || active.Count == 0) return 0;
 
-        // 清理已退出进程的记录，避免 pid 复用后签名误判为"已套用"。
-        // 仅游戏规则的 pid 一并摘掉：进程都没了，退出游戏时也没有恢复对象。
-        foreach (var dead in _appliedByPid.Keys.Where(pid => !seen.Contains(pid)).ToList())
+        var applied = 0;
+        foreach (var process in Process.GetProcesses())
         {
-            _appliedByPid.Remove(dead);
-            _gameOnlyPids.Remove(dead);
+            using (process)
+            {
+                try
+                {
+                    if (_games.ContainsKey(process.Id) || !active.TryGetValue(process.ProcessName, out var rule)) continue;
+                    if (ApplyTracked(rule, process.Id, _rules, out var changed, out _) && changed) applied++;
+                }
+                catch (InvalidOperationException) { /* 枚举后已退出。 */ }
+                catch (System.ComponentModel.Win32Exception) { /* 受保护进程不能读取名称。 */ }
+            }
         }
-
-        return appliedCount;
+        return applied;
     }
 
     public bool TryApplyRule(ProcessOptimizationRule rule, int processId, out string error)
+        => ApplyTracked(rule, processId, _rules, out _, out error);
+
+    private bool ApplyTracked(ProcessOptimizationRule rule, int pid, Dictionary<int, AppliedProcess> tracked,
+        out bool changed, out string error)
     {
-        error = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(rule.ProcessName))
+        changed = false;
+        error = "";
+        UIntPtr? affinity = null;
+        var priority = AffinityMaskBuilder.ToPriorityClass(rule.Priority);
+        if (string.IsNullOrWhiteSpace(rule.ProcessName) || SystemCriticalProcesses.IsProtected(rule.ProcessName))
+            error = "目标为空或属于系统关键进程";
+        else if (!HasAction(rule)) error = "规则未包含任何动作";
+        else if (rule.Priority != ProcessPriorityLevel.None && priority is null) error = "优先级无效";
+        else if (rule.GameOnly && rule.KernelEnforced) error = "仅游戏规则不支持内核强制亲和，请取消内核强制";
+        else if (rule.KernelEnforced && rule.Affinity == CoreAffinityMode.None) error = "内核强制需要选择核心亲和性";
+        else if (rule.Affinity != CoreAffinityMode.None)
         {
-            error = "规则未指定进程名";
-            return false;
+            if (_builder.TryBuild(rule.Affinity, rule.CustomAffinityMask, out var mask, out var reason)) affinity = mask;
+            else error = reason;
         }
-
-        if (SystemCriticalProcesses.IsProtected(rule.ProcessName))
-        {
-            error = "属于系统关键进程，本工具拒绝套用规则";
-            return false;
-        }
-
-        if (!HasAction(rule))
-        {
-            error = "规则未包含任何动作";
-            return false;
-        }
-
-        var access = rule.KernelEnforced && !_jobAssigned.Contains(processId)
-            ? ProcessOptimizationNative.AccessRequiredForJob
-            : ProcessOptimizationNative.AccessRequired;
-
-        var handle = ProcessOptimizationNative.OpenProcess(access, false, processId);
-        if (handle == IntPtr.Zero)
-        {
-            error = _elevated
-                ? $"无法打开进程（目标受保护或已退出，Win32={Marshal.GetLastWin32Error()}）"
-                : $"无法打开进程（可能需管理员权限，Win32={Marshal.GetLastWin32Error()}）";
-            return false;
-        }
-
-        var failures = new List<string>();
-        var succeeded = new List<string>();
+        if (error.Length > 0) { LastDetail = $"{rule.ProcessName}: {error}"; return false; }
 
         try
         {
-            // 1) 亲和性。
-            if (rule.Affinity != CoreAffinityMode.None)
+            using var process = FindProcess(pid);
+            if (process is null || !string.Equals(process.ProcessName, SystemCriticalProcesses.Normalize(rule.ProcessName), StringComparison.OrdinalIgnoreCase)
+                || SystemCriticalProcesses.IsProtected(process.ProcessName))
+            { error = "目标进程已退出或名称不匹配"; LastDetail = error; return false; }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        { error = "无法读取目标进程：" + ex.Message; LastDetail = error; return false; }
+        var handle = ProcessOptimizationNative.OpenProcess(rule.KernelEnforced
+            ? ProcessOptimizationNative.AccessRequiredForJob : ProcessOptimizationNative.AccessRequired, false, pid);
+        if (handle == IntPtr.Zero)
+        { error = $"无法打开进程（Win32={Marshal.GetLastWin32Error()}）"; LastDetail = $"{rule.ProcessName}: {error}"; return false; }
+        try
+        {
+            var desired = new ProcessState(0, affinity, priority, rule.LowerIoPriority ? 0 : null);
+            if (!TryRead(handle, desired, out var before))
+            { error = "无法完整备份目标字段，未写入进程参数"; return false; }
+            var signature = Signature(rule);
+            if (tracked.TryGetValue(pid, out var previous))
             {
-                if (!_builder.TryBuild(rule.Affinity, rule.CustomAffinityMask, out var mask, out var reason))
+                if (previous.Original.Created != before.Created)
                 {
-                    failures.Add(reason);
+                    // 旧 PID 已退出；只解除本工具持有的 Job 限制，不写新进程。
+                    if (!ReleaseJob(previous)) { error = "旧作业限制未能解除"; return false; }
+                    tracked.Remove(pid);
+                    previous = null;
                 }
-                else if (!ProcessOptimizationNative.SetProcessAffinityMask(handle, mask))
+                else if (previous.Signature != signature)
                 {
-                    failures.Add($"设置亲和性失败（Win32={Marshal.GetLastWin32Error()}）");
-                }
-                else
-                {
-                    succeeded.Add(rule.Affinity == CoreAffinityMode.Custom
-                        ? $"亲和性=自定义核心(0x{rule.CustomAffinityMask:X})"
-                        : $"亲和性={OptimizationLabels.Describe(rule.Affinity)}");
-
-                    // 2) 内核强制：作业对象限制由内核实施，进程自身无法改回。
-                    if (rule.KernelEnforced && !_jobAssigned.Contains(processId)
-                        && !TryEnforceByJob(mask, handle, processId, out var jobReason))
-                    {
-                        failures.Add(jobReason);
-                    }
+                    if (!RestoreTracked(tracked, pid)) { error = "旧规则未能恢复，暂不套用新规则"; return false; }
+                    previous = null;
+                    if (!TryRead(handle, desired, out before)) { error = "无法备份新规则原值"; return false; }
                 }
             }
+            if (Matches(before, desired) && (!rule.KernelEnforced || previous is not null && previous.Job != IntPtr.Zero))
+                return true;
 
-            // 3) 优先级。放在亲和性之后：万一优先级被拒，亲和性也已生效，规则不至于全无作用。
-            if (AffinityMaskBuilder.ToPriorityClass(rule.Priority) is { } priorityClass)
+            var entry = previous ?? new AppliedProcess(before, signature);
+            // 整条规则事务化；捕获全部目标字段后才写，任一动作失败恢复本次调用前的值。
+            var ok = WriteState(handle, desired);
+            if (ok && rule.KernelEnforced && affinity is { } jobMask && entry.Job == IntPtr.Zero)
+                ok = TryEnforceByJob(jobMask, handle, out entry.Job);
+            ok = ok && TryRead(handle, desired, out var after) && Matches(after, desired);
+            if (ok)
             {
-                if (ProcessOptimizationNative.SetPriorityClass(handle, priorityClass))
-                    succeeded.Add($"优先级={OptimizationLabels.Describe(rule.Priority)}");
-                else
-                    failures.Add($"设置优先级失败（Win32={Marshal.GetLastWin32Error()}）");
+                tracked[pid] = entry;
+                changed = true;
+                LastDetail = $"{rule.ProcessName}: 已套用并回读验证";
+                return true;
             }
-
-            // 4) I/O 优先级。走 ntdll 未文档化入口，失败只降级不影响其它动作。
-            if (rule.LowerIoPriority)
+            var rolledBack = (previous is not null || ReleaseJob(entry)) & WriteState(handle, before);
+            rolledBack = rolledBack && TryRead(handle, before, out var restored) && Matches(restored, before);
+            if (!rolledBack)
             {
-                var ioPriority = ProcessOptimizationNative.IoPriorityVeryLow;
-                if (ProcessOptimizationNative.NtSetInformationProcess(
-                        handle,
-                        ProcessOptimizationNative.ProcessIoPriority,
-                        ref ioPriority,
-                        sizeof(int)) == 0)
-                {
-                    succeeded.Add("I/O=最低");
-                }
-                else
-                {
-                    failures.Add("设置 I/O 优先级失败");
-                }
+                entry.Signature = ""; // 保存恢复依据，下次先恢复，绝不把部分成功当成已完成。
+                tracked[pid] = entry;
             }
+            error = rolledBack ? "套用未完整成功，已回滚本次改动" : "套用和回滚未完整成功，已保留原值等待重试";
+            LastDetail = $"{rule.ProcessName}: {error}";
+            return false;
         }
         finally
         {
+            if (error.Length > 0) LastDetail = $"{rule.ProcessName}: {error}";
             ProcessOptimizationNative.CloseHandle(handle);
         }
-
-        LastDetail = $"{rule.ProcessName} → {string.Join("、", succeeded)}";
-
-        if (failures.Count > 0)
-        {
-            error = string.Join("；", failures);
-            return false;
-        }
-
-        return succeeded.Count > 0;
     }
 
     public void ApplyGameMode(OptimizationSettings settings, string? gameProcessName)
     {
-        // 游戏退出：把之前钉住的进程放回全核心与标准优先级。
-        if (string.IsNullOrWhiteSpace(gameProcessName))
-        {
-            if (_gamePid is { } pid)
-            {
-                RestoreDefaults(pid);
-                _gamePid = null;
-            }
-
-            return;
-        }
-
-        if (!settings.Enabled || !settings.GameModeEnabled || !IsSupported)
-            return;
-
         var rule = new ProcessOptimizationRule
         {
-            ProcessName = gameProcessName,
-            Affinity = settings.GameAffinity,
-            CustomAffinityMask = settings.GameCustomAffinityMask,
-            Priority = settings.GamePriority,
+            ProcessName = gameProcessName ?? "", Affinity = settings.GameAffinity,
+            CustomAffinityMask = settings.GameCustomAffinityMask, Priority = settings.GamePriority,
         };
-
-        if (!HasAction(rule))
-            return;
-
-        foreach (var process in Process.GetProcessesByName(
-                     gameProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                         ? gameProcessName[..^4]
-                         : gameProcessName))
+        var enabled = settings.Enabled && settings.GameModeEnabled && !string.IsNullOrWhiteSpace(gameProcessName) && HasAction(rule);
+        var signature = enabled ? gameProcessName!.ToUpperInvariant() + ":" + Signature(rule) : "";
+        if (signature != _gameSignature || !enabled)
         {
-            try
+            foreach (var pid in _games.Keys.ToArray()) RestoreTracked(_games, pid);
+            _gameSignature = signature;
+            _lastGameScanUtc = DateTime.MinValue;
+        }
+        if (!enabled) return;
+        if ((DateTime.UtcNow - _lastGameScanUtc).TotalSeconds < ScanIntervalSeconds) return;
+        _lastGameScanUtc = DateTime.UtcNow;
+        foreach (var process in Process.GetProcessesByName(SystemCriticalProcesses.Normalize(gameProcessName!)))
+        {
+            using (process)
             {
-                var pid = process.Id;
-                if (TryApplyRule(rule, pid, out _))
-                    _gamePid = pid;
-            }
-            catch
-            {
-                // 游戏可能正在退出，跳过。
-            }
-            finally
-            {
-                process.Dispose();
+                try
+                {
+                    // 游戏预设覆盖同进程的常驻规则，先恢复常驻原值，避免两套备份互相覆盖。
+                    if (RestoreTracked(_rules, process.Id)) ApplyTracked(rule, process.Id, _games, out _, out _);
+                }
+                catch (InvalidOperationException) { /* 游戏恰好退出，下轮清理备份。 */ }
+                catch (System.ComponentModel.Win32Exception ex) { LastDetail = ex.Message; }
             }
         }
     }
 
-    /// <summary>
-    /// 撤销「仅游戏时生效」规则留下的改动，把相关进程放回全核心 + 标准优先级。
-    /// 无残留时是空操作，因此可以在每条可能的退出路径上放心调用。
-    /// </summary>
-    private void RevertGameOnlyRules(string reason)
+    private static Process? FindProcess(int pid)
     {
-        if (_gameOnlyPids.Count == 0)
-            return;
-
-        foreach (var pid in _gameOnlyPids)
-            RestoreDefaults(pid);
-
-        _gameOnlyPids.Clear();
-
-        // 缓存一并清掉：下次进入游戏必须能重新套用，否则签名比对会把它们误判为"已套用"。
-        _appliedByPid.Clear();
+        try { return Process.GetProcessById(pid); }
+        catch (ArgumentException) { return null; }
     }
 
-    /// <summary>把进程恢复为全核心 + 标准优先级（尽力而为，失败静默）。</summary>
-    private void RestoreDefaults(int processId)
+    private static bool TryRead(IntPtr handle, ProcessState fields, out ProcessState state)
     {
-        if (!_builder.TryBuild(CoreAffinityMode.AllCores, out var mask, out _))
-            return;
+        state = fields;
+        if (!ProcessOptimizationNative.GetProcessTimes(handle, out var created, out _, out _, out _)) return false;
+        UIntPtr? affinity = null; uint? priority = null; int? io = null;
+        if (fields.Affinity is not null)
+        {
+            if (!ProcessOptimizationNative.GetProcessAffinityMask(handle, out var mask, out _)) return false;
+            affinity = mask;
+        }
+        if (fields.Priority is not null)
+        {
+            var value = ProcessOptimizationNative.GetPriorityClass(handle);
+            if (value == 0) return false;
+            priority = value;
+        }
+        if (fields.Io is not null)
+        {
+            if (ProcessOptimizationNative.NtQueryInformationProcess(handle, ProcessOptimizationNative.ProcessIoPriority, out var value, sizeof(int), out _) != 0) return false;
+            io = value;
+        }
+        state = new(created, affinity, priority, io);
+        return true;
+    }
 
-        var handle = ProcessOptimizationNative.OpenProcess(
-            ProcessOptimizationNative.AccessRequired, false, processId);
+    private static bool Matches(ProcessState current, ProcessState desired)
+        => current.Affinity == desired.Affinity && current.Priority == desired.Priority && current.Io == desired.Io;
+
+    private static bool WriteState(IntPtr handle, ProcessState state)
+    {
+        var ok = true;
+        if (state.Affinity is { } mask) ok &= ProcessOptimizationNative.SetProcessAffinityMask(handle, mask);
+        if (state.Priority is { } priority) ok &= ProcessOptimizationNative.SetPriorityClass(handle, priority);
+        if (state.Io is { } io)
+            ok &= ProcessOptimizationNative.NtSetInformationProcess(handle, ProcessOptimizationNative.ProcessIoPriority, ref io, sizeof(int)) == 0;
+        return ok;
+    }
+
+    private bool RestoreTracked(Dictionary<int, AppliedProcess> tracked, int pid)
+    {
+        if (!tracked.TryGetValue(pid, out var entry)) return true;
+        if (!ReleaseJob(entry)) { LastDetail = $"PID {pid}: 无法解除作业限制，保留备份"; return false; }
+        var handle = ProcessOptimizationNative.OpenProcess(ProcessOptimizationNative.AccessRequired, false, pid);
         if (handle == IntPtr.Zero)
-            return;
-
-        try
         {
-            ProcessOptimizationNative.SetProcessAffinityMask(handle, mask);
-            ProcessOptimizationNative.SetPriorityClass(
-                handle, ProcessOptimizationNative.NORMAL_PRIORITY_CLASS);
-        }
-        finally
-        {
-            ProcessOptimizationNative.CloseHandle(handle);
-        }
-    }
-
-    /// <summary>用作业对象把亲和性升级为内核强制。句柄挂在服务上，进程退出前不能释放。</summary>
-    private bool TryEnforceByJob(UIntPtr mask, IntPtr processHandle, int processId, out string reason)
-    {
-        reason = string.Empty;
-
-        var job = ProcessOptimizationNative.CreateJobObject(IntPtr.Zero, null);
-        if (job == IntPtr.Zero)
-        {
-            reason = $"创建作业对象失败（Win32={Marshal.GetLastWin32Error()}）";
+            if (Marshal.GetLastWin32Error() == 87) { tracked.Remove(pid); return true; }
+            LastDetail = $"PID {pid}: 无法打开进程恢复，保留备份";
             return false;
         }
-
-        var limits = new ProcessOptimizationNative.JOBOBJECT_BASIC_LIMIT_INFORMATION
+        try
         {
-            LimitFlags = ProcessOptimizationNative.JOB_OBJECT_LIMIT_AFFINITY,
-            Affinity = mask,
-        };
+            if (!ProcessOptimizationNative.GetProcessTimes(handle, out var created, out _, out _, out _)) return false;
+            if (created != entry.Original.Created) { tracked.Remove(pid); return true; }
+            if (!WriteState(handle, entry.Original) || !TryRead(handle, entry.Original, out var after) || !Matches(after, entry.Original))
+            { LastDetail = $"PID {pid}: 恢复未完成，保留原值等待重试"; return false; }
+            tracked.Remove(pid);
+            LastDetail = $"PID {pid}: 已恢复改动前的进程参数";
+            return true;
+        }
+        finally { ProcessOptimizationNative.CloseHandle(handle); }
+    }
 
+    private static bool SetJobAffinity(IntPtr job, UIntPtr? mask)
+    {
+        var limits = new ProcessOptimizationNative.JOBOBJECT_BASIC_LIMIT_INFORMATION
+        { LimitFlags = mask is null ? 0 : ProcessOptimizationNative.JOB_OBJECT_LIMIT_AFFINITY, Affinity = mask ?? UIntPtr.Zero };
         var size = Marshal.SizeOf<ProcessOptimizationNative.JOBOBJECT_BASIC_LIMIT_INFORMATION>();
         var buffer = Marshal.AllocHGlobal(size);
         try
         {
             Marshal.StructureToPtr(limits, buffer, false);
-            if (!ProcessOptimizationNative.SetInformationJobObject(
-                    job,
-                    ProcessOptimizationNative.JobObjectBasicLimitInformation,
-                    buffer,
-                    (uint)size))
-            {
-                reason = $"配置作业对象失败（Win32={Marshal.GetLastWin32Error()}）";
-                ProcessOptimizationNative.CloseHandle(job);
-                return false;
-            }
+            return ProcessOptimizationNative.SetInformationJobObject(job, ProcessOptimizationNative.JobObjectBasicLimitInformation, buffer, (uint)size);
         }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
 
-        if (!ProcessOptimizationNative.AssignProcessToJobObject(job, processHandle))
-        {
-            // 最常见的原因是目标进程已隶属于某个作业（例如由调试器或启动器创建），
-            // 此时内核拒绝再次归属。这属于环境限制，不是配置错误。
-            reason = $"进程已在其它作业对象中，无法内核强制（Win32={Marshal.GetLastWin32Error()}）";
-            ProcessOptimizationNative.CloseHandle(job);
-            return false;
-        }
+    private static bool TryEnforceByJob(UIntPtr mask, IntPtr handle, out IntPtr job)
+    {
+        job = ProcessOptimizationNative.CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return false;
+        if (SetJobAffinity(job, mask) && ProcessOptimizationNative.AssignProcessToJobObject(job, handle)) return true;
+        ProcessOptimizationNative.CloseHandle(job);
+        job = IntPtr.Zero;
+        return false;
+    }
 
-        _jobs.Add(job);
-        _jobAssigned.Add(processId);
+    private static bool ReleaseJob(AppliedProcess entry)
+    {
+        if (entry.Job == IntPtr.Zero) return true;
+        // 关联仍存在时关闭最后一个句柄不会销毁 Job；必须先显式解除亲和性限制。
+        if (!SetJobAffinity(entry.Job, null)) return false;
+        ProcessOptimizationNative.CloseHandle(entry.Job);
+        entry.Job = IntPtr.Zero;
         return true;
     }
 
     private static bool HasAction(ProcessOptimizationRule rule) =>
-        (rule.Affinity == CoreAffinityMode.Custom
-            ? rule.CustomAffinityMask != 0
-            : rule.Affinity != CoreAffinityMode.None)
-        || rule.Priority != ProcessPriorityLevel.None
-        || rule.LowerIoPriority;
+        rule.Affinity != CoreAffinityMode.None || rule.Priority != ProcessPriorityLevel.None || rule.LowerIoPriority;
 
     private static string Signature(ProcessOptimizationRule rule) =>
         $"{(int)rule.Affinity}|0x{rule.CustomAffinityMask:X}|{(int)rule.Priority}|{rule.KernelEnforced}|{rule.LowerIoPriority}|{rule.GameOnly}";
 
     public void Dispose()
     {
-        foreach (var job in _jobs)
-            ProcessOptimizationNative.CloseHandle(job);
-
-        _jobs.Clear();
-        _jobAssigned.Clear();
+        foreach (var pid in _games.Keys.ToArray()) RestoreTracked(_games, pid);
+        foreach (var pid in _rules.Keys.ToArray()) RestoreTracked(_rules, pid);
     }
 }

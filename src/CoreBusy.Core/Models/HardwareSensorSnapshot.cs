@@ -53,7 +53,7 @@ public sealed class HardwareSensorSnapshot
     public double? GpuUtilizationPercent { get; init; }
 
     /// <summary>
-    /// **全部独显**实测功率之和（W，v1.20.1）。null 表示"没有任何独显功率传感器"
+    /// **全部独显**完整实测功率之和（W）。null 表示未取得完整读数，部分读数保留在 DiscreteGpuReadings
     /// （不是 0 W）—— 核显与驱动缺失都属于这一情形，由功耗模型按型号估算兜底。
     /// <para>
     /// 只有独显才可能有功率传感器：NVIDIA 经 NVML、AMD 独显经 ADL 暴露 <c>SensorType.Power</c>。
@@ -68,6 +68,9 @@ public sealed class HardwareSensorSnapshot
     /// 型号判别不出的卡不进本列表（宁可不计也不冒充核显）。
     /// </summary>
     public IReadOnlyList<string> DiscreteGpuNames { get; init; } = [];
+
+    /// <summary>逐独显读数；缺失功率也保留该卡，防止部分可读时漏算其余卡。</summary>
+    public IReadOnlyList<GpuPowerReading> DiscreteGpuReadings { get; init; } = [];
 
     /// <summary>硬盘最高温度（℃，多块盘取最热）。SMART 不可用时为 null。</summary>
     public double? DriveTemperatureC { get; init; }

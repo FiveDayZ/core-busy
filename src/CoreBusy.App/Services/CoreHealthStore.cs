@@ -80,7 +80,7 @@ public static class CoreHealthStore
             if (!File.Exists(FilePath))
                 return result;
 
-            var file = JsonSerializer.Deserialize<HealthFile>(File.ReadAllText(FilePath));
+            var file = JsonSerializer.Deserialize<HealthFile>(JsonFile.ReadAllText(FilePath));
             if (file?.Cores is null)
                 return result;
 
@@ -120,7 +120,7 @@ public static class CoreHealthStore
             foreach (var pair in baselines)
                 file.Cores[pair.Key] = pair.Value;
 
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(file, JsonOptions));
+            JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(file, JsonOptions));
         }
         catch (Exception)
         {

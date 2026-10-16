@@ -7,7 +7,7 @@ using CoreBusy.Core.Interfaces;
 /// 基于 Windows Performance Counter（Processor 对象 / % Processor Time 计数器）的
 /// 每逻辑处理器占用率采集实现（方案 7.2 节）。
 /// </summary>
-public sealed class PerCoreUsageProvider : ICoreUsageProvider
+public sealed class PerCoreUsageProvider : ICoreUsageProvider, IDisposable
 {
     private const string CategoryName = "Processor";
     private const string CounterName = "% Processor Time";
@@ -57,13 +57,19 @@ public sealed class PerCoreUsageProvider : ICoreUsageProvider
             }
             catch (InvalidOperationException)
             {
-                // 实例消失（如热插拔/计数器重建）时按 0 处理，避免采样线程崩溃。
-                value = 0f;
+                // 实例消失时标记无证据，不能把读取失败记录为真实空闲。
+                value = float.NaN;
             }
 
-            values[i] = Math.Clamp(value, 0d, 100d);
+            values[i] = float.IsFinite(value) ? Math.Clamp(value, 0d, 100d) : double.NaN;
         }
 
         return values;
+    }
+
+    public void Dispose()
+    {
+        foreach (var counter in _counters)
+            counter.Dispose();
     }
 }

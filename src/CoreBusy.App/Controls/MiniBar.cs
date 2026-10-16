@@ -8,17 +8,7 @@ public sealed class MiniBar : FrameworkElement
 {
     public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(
         nameof(Value), typeof(double), typeof(MiniBar),
-        new FrameworkPropertyMetadata(0.0, OnValueChanged));
-
-    private readonly ValueAnimator _animator;
-
-    public MiniBar() => _animator = new ValueAnimator(this);
-
-    private static void OnValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        var bar = (MiniBar)d;
-        bar._animator.MoveTo((double)e.NewValue);
-    }
+        new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public static readonly DependencyProperty MaximumProperty = DependencyProperty.Register(
         nameof(Maximum), typeof(double), typeof(MiniBar),
@@ -63,7 +53,7 @@ public sealed class MiniBar : FrameworkElement
         drawingContext.DrawRoundedRectangle(TrackBrush ?? Brushes.Transparent, null, full, height / 2, height / 2);
 
         var max = Math.Max(1e-6, Maximum);
-        var ratio = Math.Clamp(Value / max, 0, 1);
+        var ratio = double.IsFinite(Value) && double.IsFinite(max) ? Math.Clamp(Value / max, 0, 1) : 0;
         if (ratio <= 0)
             return;
 

@@ -51,9 +51,7 @@ public sealed class CoreThreadVm : ObservableObject
     /// <summary>应用**实时**线程快照。</summary>
     public void ApplyLive(CpuThreadSnapshot snapshot)
     {
-        Usage = snapshot.UsagePercent;
-        UsageText = $"{snapshot.UsagePercent:0}%";
-        UsageBrush = UsagePalette.UsageBrush(snapshot.UsagePercent);
+        ApplyCumulative(snapshot.UsagePercent);
     }
 
     /// <summary>
@@ -62,8 +60,9 @@ public sealed class CoreThreadVm : ObservableObject
     /// </summary>
     public void ApplyCumulative(double averagePercent)
     {
-        Usage = averagePercent;
-        UsageText = $"{averagePercent:0}%";
-        UsageBrush = UsagePalette.UsageBrush(averagePercent);
+        var valid = double.IsFinite(averagePercent) && averagePercent is >= 0 and <= 100;
+        Usage = valid ? averagePercent : 0;
+        UsageText = valid ? $"{averagePercent:0}%" : "-";
+        UsageBrush = UsagePalette.UsageBrush(Usage);
     }
 }

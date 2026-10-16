@@ -127,6 +127,9 @@ internal sealed class AffinityMaskBuilder
             return false;
         }
 
+        if (mode == CoreAffinityMode.Custom)
+            return TryBuildCustom(customMask, out mask, out reason);
+
         var osIndices = mode switch
         {
             CoreAffinityMode.AllCores => _topology.LogicalProcessors.Select(p => p.OsIndex),

@@ -23,19 +23,18 @@ public sealed class PcbBoardControl : FrameworkElement
     // 板基/板边/安装孔是"物理板子"，终身不变；**铜层随整机养成阶段越养越亮**（v1.32.0）
     // —— 封装阶段 = 全核平均等级所处阶段（UiTheme.StageIndexOf 单一边界源），
     // 同一块板，铜越用越亮；全核满级（传说）整板转金铜，主板即整机养成的最大画布。
-    private static readonly Brush BoardBase = Frozen("#0B3226");
-    private static readonly Brush BoardEdge = Frozen("#124634");
-    private static readonly Brush PadInner = Frozen("#0B3226");
-    private static readonly Brush HoleRing = Frozen("#8F9A93");
-    private static readonly Brush HoleInner = Frozen("#07251C");
+    private static readonly Brush BoardBase = Frozen("#10271F");
+    private static readonly Brush BoardEdge = Frozen("#365144");
+    private static readonly Brush HoleRing = Frozen("#7B887E");
+    private static readonly Brush HoleInner = Frozen("#081710");
 
     /// <summary>铜走线色阶：幼体 → 究极期逐级提亮；传说（全核满级）转金铜。</summary>
     private static readonly string[] TraceHexes =
-        ["#1D5C45", "#20644B", "#247055", "#287C5F", "#6E5A2C"];
+        ["#234637", "#284E3D", "#2D5743", "#32604B", "#635532"];
 
     /// <summary>亮铜走线色阶（与常规走线同阶，恒高两档亮度）。</summary>
     private static readonly string[] TraceBrightHexes =
-        ["#2E7B5D", "#34866A", "#3B9476", "#42A282", "#9A7D3B"];
+        ["#345B46", "#3A644D", "#406D54", "#46765B", "#85713F"];
 
     /// <summary>焊盘金色色阶：随阶段渐纯，传说为标准金。</summary>
     private static readonly string[] PadHexes =
@@ -43,7 +42,7 @@ public sealed class PcbBoardControl : FrameworkElement
 
     /// <summary>丝印色阶：常规阶段随铜色微亮，传说转金。</summary>
     private static readonly string[] SilkHexes =
-        ["#3E8A6C", "#43926F", "#489A74", "#4EA27B", "#C8B06A"];
+        ["#61816B", "#688872", "#708F79", "#789780", "#A49363"];
 
     private static Brush Trace = Frozen(TraceHexes[0]);
     private static Brush TraceBright = Frozen(TraceBrightHexes[0]);
@@ -53,7 +52,6 @@ public sealed class PcbBoardControl : FrameworkElement
     private static Pen TracePen = CreatePen(Trace, 2);
     private static Pen TraceBrightPen = CreatePen(TraceBright, 1.2);
     private static readonly Pen EdgePen = CreatePen(BoardEdge, 1);
-    private static readonly Pen HolePen = CreatePen(HoleRing, 2);
 
     private static int _stage;
     private static readonly List<PcbBoardControl> LiveInstances = [];
@@ -92,80 +90,60 @@ public sealed class PcbBoardControl : FrameworkElement
         if (w < 40 || h < 40)
             return;
 
-        // 1. 板基 + 板边框线（双线像 keep-out 丝印框）。
-        dc.DrawRectangle(BoardBase, null, new Rect(0, 0, w, h));
-        dc.DrawRectangle(null, EdgePen, new Rect(6, 6, w - 12, h - 12));
-
-        // 2. 四角安装孔：金属环 + 孔。
-        foreach (var pt in new[]
-                 {
-                     new Point(22, 22), new Point(w - 22, 22),
-                     new Point(22, h - 22), new Point(w - 22, h - 22),
-                 })
+        // 圆角板边与安装孔始终可见；中心区域留给插座分区。
+        dc.DrawRoundedRectangle(BoardBase, EdgePen, new Rect(1, 1, w - 2, h - 2), 14, 14);
+        dc.DrawRoundedRectangle(null, EdgePen, new Rect(7, 7, w - 14, h - 14), 9, 9);
+        foreach (var pt in new[] { new Point(22, 22), new Point(w - 22, 22), new Point(22, h - 22), new Point(w - 22, h - 22) })
         {
-            dc.DrawEllipse(HoleRing, null, pt, 7, 7);
-            dc.DrawEllipse(HoleInner, null, pt, 4, 4);
+            dc.DrawEllipse(HoleRing, null, pt, 6, 6);
+            dc.DrawEllipse(HoleInner, null, pt, 3, 3);
         }
 
-        // 3. 底部总线：一束平行走线从左下进入、依次拐弯向上 ——
-        //    芯片角色卡就排布在这束"主板总线"上方。
-        var busX = w * 0.62;
-        for (var i = 0; i < 6; i++)
+        // 边缘信号束使用 45° 转角，避免旧版长直线穿过标题与核心读数。
+        for (var i = 0; i < 5; i++)
         {
-            var y = h - 30 - (i * 9);
-            var topX = busX - (i * 26);
-            var topY = h - 96 - (i * 6);
-
-            var geo = new StreamGeometry();
-            using (var ctx = geo.Open())
+            var offset = 11 + i * 4;
+            var geometry = new StreamGeometry();
+            using (var ctx = geometry.Open())
             {
-                ctx.BeginFigure(new Point(16, y), false, false);
-                ctx.LineTo(new Point(topX, y), true, false);
-                ctx.LineTo(new Point(topX, topY), true, false);
+                ctx.BeginFigure(new Point(offset, 70 + i * 10), false, false);
+                ctx.LineTo(new Point(offset, h - 90 - i * 6), true, false);
+                ctx.LineTo(new Point(45 + i * 4, h - 56 - i * 6), true, false);
+                ctx.LineTo(new Point(w * .42 + i * 25, h - 56 - i * 6), true, false);
+                ctx.BeginFigure(new Point(w - offset, 80 + i * 12), false, false);
+                ctx.LineTo(new Point(w - offset, h - 110 - i * 5), true, false);
+                ctx.LineTo(new Point(w - 50 - i * 4, h - 71 - i * 5), true, false);
             }
-
-            geo.Freeze();
-            dc.DrawGeometry(null, i % 3 == 0 ? TraceBrightPen : TracePen, geo);
-
-            // 走线端点焊盘（金环 + 孔）。
-            dc.DrawEllipse(Pad, null, new Point(topX, topY), 3.5, 3.5);
-            dc.DrawEllipse(PadInner, null, new Point(topX, topY), 1.5, 1.5);
+            geometry.Freeze();
+            dc.DrawGeometry(null, i % 2 == 0 ? TracePen : TraceBrightPen, geometry);
+            dc.DrawEllipse(Pad, null, new Point(w - offset, 80 + i * 12), 2, 2);
         }
 
-        // 4. 顶边下行走线（均匀间距，模拟信号排线），端点收焊盘。
-        var topCount = Math.Max(4, (int)(w / 90));
-        for (var i = 0; i < topCount; i++)
+        // 顶边的 VRM 元件与底部排针提示真实主板结构，全部为静态绘制。
+        for (var i = 0; i < 8; i++)
         {
-            var x = 40 + (i * ((w - 80) / Math.Max(1, topCount - 1)));
-            var depth = h * (0.32 + (0.10 * (i % 3)));
-
-            var geo = new StreamGeometry();
-            using (var ctx = geo.Open())
-            {
-                ctx.BeginFigure(new Point(x, 10), false, false);
-                ctx.LineTo(new Point(x, depth), true, false);
-            }
-
-            geo.Freeze();
-            dc.DrawGeometry(null, i % 2 == 0 ? TracePen : TraceBrightPen, geo);
-
-            dc.DrawEllipse(Pad, null, new Point(x, depth), 3, 3);
-            dc.DrawEllipse(PadInner, null, new Point(x, depth), 1.2, 1.2);
+            var x = w * .46 + i * 29;
+            if (x + 22 > w - 45) break;
+            dc.DrawRoundedRectangle(HoleInner, EdgePen, new Rect(x, 12, 20, 11), 2, 2);
+            dc.DrawRectangle(TraceBright, null, new Rect(x + 4, 15, 12, 5));
         }
-
-        // 5. 过孔：板下部散布的小铜孔（固定确定性图案，不引入随机数）。
-        for (var i = 0; i < 14; i++)
+        for (var i = 0; i < 18; i++)
         {
-            var x = 30 + (i * ((w - 60) / 13.0));
-            var y = h * (i % 2 == 0 ? 0.86 : 0.90);
-            dc.DrawEllipse(TraceBright, null, new Point(x, y), 2.2, 2.2);
-            dc.DrawEllipse(BoardBase, null, new Point(x, y), 0.9, 0.9);
+            var x = 50 + i * 8;
+            dc.DrawRectangle(HoleInner, null, new Rect(x - 2, h - 34, 6, 12));
+            dc.DrawRectangle(Pad, null, new Rect(x, h - 31, 2, 6));
+        }
+        for (var i = 0; i < 9; i++)
+        {
+            var x = w - 50 - i * 9;
+            dc.DrawEllipse(TraceBright, null, new Point(x, h - 29), 2.2, 2.2);
+            dc.DrawEllipse(BoardBase, null, new Point(x, h - 29), .9, .9);
         }
 
         // 6. 丝印：板名 + 版本（Consolas 低对比小字，像真板上的白字油印）。
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         DrawSilk(dc, "CORE-BUSY MAINBOARD", 26, h - 14, 11, dpi);
-        DrawSilk(dc, "REV 2.6 · CPU CORE SOCKET ARRAY", w - 30, h - 14, 9, dpi, rightAlign: true);
+        DrawSilk(dc, "CPU CORE SOCKET ARRAY", w - 30, h - 14, 9, dpi, rightAlign: true);
     }
 
     private static void DrawSilk(

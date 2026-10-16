@@ -133,7 +133,7 @@ public static class EnergyHistoryStore
             if (!File.Exists(FilePath))
                 return (result, CurrentCaliber);
 
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            using var document = JsonDocument.Parse(JsonFile.ReadAllText(FilePath));
             var root = document.RootElement;
 
             if (root.ValueKind != JsonValueKind.Object)
@@ -214,7 +214,7 @@ public static class EnergyHistoryStore
 
             // Caliber 声明在最前：人工翻这个文件时，第一眼就能看出这些数字是哪个口径的量。
             var payload = new EnergyHistoryFile { Caliber = CurrentCaliber, Days = serializable };
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
+            JsonFile.WriteAllText(FilePath, JsonSerializer.Serialize(payload, JsonOptions));
         }
         catch (Exception)
         {

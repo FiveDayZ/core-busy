@@ -1,6 +1,7 @@
 namespace CoreBusy.App.Themes;
 
 using System.Windows.Media;
+using CoreBusy.Core.Progression;
 
 /// <summary>
 /// 主题相关的控件级用色（核心 Tile 底色/边框等）。
@@ -15,22 +16,21 @@ public static class UiTheme
     public static Brush TileDangerBorderBrush { get; private set; } = Frozen("#E56570");
 
     /// <summary>
-    /// 成长阶段边框阶梯（v1.27.2）：幼体 = 默认边框（新芯片不抢眼）；
-    /// 成长期 / 成熟期 / 究极期 = 品牌强调色逐级提亮；传说 = 金（与 PCB 金引脚同源，品牌无关）。
-    /// 高负载红框优先级更高（见 DashboardCoreVm.ApplyBorder）。
+    /// 成长阶段描边：兼容既有调用；主卡以真实 CPU 封装表现阶段。
+    /// 与负载告警分离；CoreEvolutionVisual 根据硬件厂商选择实物原型。
     /// </summary>
     private static Brush[] _stageBorders =
-        [TileBorderBrush, TileBorderBrush, TileBorderBrush, TileBorderBrush, Frozen("#E8C56A")];
+        [TileBorderBrush, Frozen("#91A6AE"), Frozen("#80B3CB"), Frozen("#71CFFF"), Frozen("#E8C56A")];
 
     /// <summary>
-    /// 成长阶段索引（v1.32.0 抽取为单一边界源）：幼体0 / 成长期1 / 成熟期2 / 究极期3 / 传说4。
-    /// 边界与 <see cref="CoreLevelVm.StageText"/> 逐档一致（10 / 30 / 60 / 99），
+    /// 成长阶段索引 0–4：对应 Intel / AMD 各自的五款真实 CPU 原型。
+    /// 边界与 <see cref="CoreLevelVm.StageText"/> 逐档一致（10 / 40 / 75 / 99），
     /// 单核边框与整板铜层都从这里取阶段，杜绝两处口径漂移。
     /// </summary>
     public static int StageIndexOf(int level)
-        => level switch { >= 99 => 4, >= 60 => 3, >= 30 => 2, >= 10 => 1, _ => 0 };
+        => CoreProgressionRules.FormIndexOf(level);
 
-    /// <summary>按等级取阶段边框：幼体(1-9) / 成长期(10-29) / 成熟期(30-59) / 究极期(60-98) / 传说(99)。</summary>
+    /// <summary>按等级取阶段边框（边界由 CoreProgressionRules 统一提供）。</summary>
     public static Brush StageBorderFor(int level) => _stageBorders[StageIndexOf(level)];
 
     internal static void Apply(
@@ -52,11 +52,11 @@ public static class UiTheme
 
         _stageBorders =
         [
-            TileBorderBrush,   // 幼体：默认边框
-            Tint(0x55),        // 成长期
-            Tint(0x88),        // 成熟期
-            Tint(0xCC),        // 究极期
-            Frozen("#E8C56A"), // 传说：金
+            TileBorderBrush,
+            Frozen("#91A6AE"),
+            Tint(0xDD),
+            Tint(0xFF),
+            Frozen("#E8C56A"),
         ];
     }
 

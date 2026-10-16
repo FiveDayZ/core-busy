@@ -12,7 +12,7 @@ using CoreBusy.Core.Models;
 /// </summary>
 public sealed class LogicalProcessorTopologyService : ICpuTopologyService
 {
-    private const int RelationProcessorCore = 3;
+    private const int RelationProcessorCore = 0;
     private const uint ERROR_INSUFFICIENT_BUFFER = 122;
 
     /// <summary>PROCESSOR_RELATIONSHIP.Flags 的 LTP_PC_SMT 位：该物理核心启用同步多线程。</summary>
@@ -193,7 +193,7 @@ public sealed class LogicalProcessorTopologyService : ICpuTopologyService
                         for (int bit = 0; bit < 64; bit++)
                         {
                             if ((mask & (1UL << bit)) != 0)
-                                osIndexes.Add(g * 64 + bit);
+                                osIndexes.Add(group.Group * 64 + bit);
                         }
                         groupCursor += Marshal.SizeOf<GROUP_AFFINITY>();
                     }

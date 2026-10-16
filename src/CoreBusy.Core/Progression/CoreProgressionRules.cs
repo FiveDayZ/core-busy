@@ -47,6 +47,16 @@ public sealed record CoreUnlock(int Level, string Title, string Description, Cor
 /// </remarks>
 public static class CoreProgressionRules
 {
+    /// <summary>五个真实 CPU 外观的起始等级；主卡、预告与主板共用。</summary>
+    public static IReadOnlyList<int> FormLevels { get; } = Array.AsReadOnly<int>([1, 10, 40, 75, 99]);
+
+    public static int FormIndexOf(int level)
+    {
+        for (var index = FormLevels.Count - 1; index > 0; index--)
+            if (level >= FormLevels[index]) return index;
+        return 0;
+    }
+
     private static readonly CoreUnlock[] Table =
     [
         new(2, "首次满负荷时刻", "记录这颗核第一次跑到 100% 的时间", CoreUnlockKind.Archive),

@@ -16,6 +16,14 @@ using CoreBusy.App.ViewModels.Dashboard;
 public partial class MainWindow : Window
 {
     private const int WmGetMinMaxInfo = 0x0024;
+    public static readonly DependencyProperty IsCondensedBoardProperty = DependencyProperty.Register(
+        nameof(IsCondensedBoard), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
+    public bool IsCondensedBoard { get => (bool)GetValue(IsCondensedBoardProperty); private set => SetValue(IsCondensedBoardProperty, value); }
+    public static readonly DependencyProperty CondensedPortraitHeightProperty = DependencyProperty.Register(
+        nameof(CondensedPortraitHeight), typeof(double), typeof(MainWindow), new PropertyMetadata(68.0));
+    public double CondensedPortraitHeight { get => (double)GetValue(CondensedPortraitHeightProperty); private set => SetValue(CondensedPortraitHeightProperty, value); }
+    public bool IsSingleScreenBoard { get; }
+
     private readonly DashboardViewModel _viewModel;
     private TrayIcon? _trayIcon;
     private bool _realExit;
@@ -24,8 +32,19 @@ public partial class MainWindow : Window
     public MainWindow(DashboardViewModel viewModel)
     {
         InitializeComponent();
+        Height = Math.Min(Height, SystemParameters.WorkArea.Height);
         _viewModel = viewModel;
+        IsSingleScreenBoard = viewModel.CoreGroups.Sum(g => g.NaturalCores.Count) <= 8;
+        if (IsSingleScreenBoard && viewModel.CoreGroups.Count > 1) MinHeight = 500;
         DataContext = _viewModel;
+        IsVisibleChanged += (_, _) => UpdatePresentationState();
+        StateChanged += (_, _) => UpdatePresentationState();
+        SizeChanged += (_, _) =>
+        {
+            IsCondensedBoard = IsSingleScreenBoard && (ActualHeight < 560 || viewModel.CoreGroups.Count > 1);
+            CondensedPortraitHeight = viewModel.CoreGroups.Count > 1 && ActualHeight < 520 ? 64
+                : ActualHeight < 480 ? 68 : ActualHeight < 560 ? 76 : 88;
+        };
 
         // 弹卡动画（v1.27.0）：登场补间 + EXP 条生长都在 Opened/Closed 生命周期内，
         // 关闭即停 —— 不给软件渲染引擎留任何常驻动画负载。
@@ -33,9 +52,17 @@ public partial class MainWindow : Window
         FocusCard.Closed += OnFocusCardClosed;
     }
 
+    private void UpdatePresentationState()
+    {
+        var active = IsVisible && WindowState != WindowState.Minimized;
+        if (!active) FocusCard.IsOpen = false;
+        _viewModel.SetPresentationActive(active);
+    }
+
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        InstanceActivation.Attach(this);
         _viewModel.Start();
     }
 
@@ -172,27 +199,29 @@ public partial class MainWindow : Window
     }
 
     /// <summary>重启本程序（用于让主题 / 核心分区变更生效）。</summary>
-    private void RestartApplication()
+    private void RestartApplication() => RestartApplication(elevated: false);
+
+    private void RestartApplication(bool elevated)
     {
         try
         {
-            var exe = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(exe))
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = exe,
-                    UseShellExecute = true,
-                });
-            }
+            using var process = System.Diagnostics.Process.Start(Services.AppRestart.StartInfo(elevated));
+            if (process is null)
+                throw new InvalidOperationException("未能启动新进程。");
         }
-        catch (Exception)
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
+            return; // UAC 取消时保留旧实例。
+        }
+        catch (Exception ex)
+        {
+            Services.AppLog.Write("restart launch", ex);
+            MessageBox.Show(this, "重启失败：" + ex.Message, "CORE-BUSY", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
 
-        _realExit = true; // 重启流程不允许被"关闭到托盘"拦截
-        _viewModel.Stop();
-        Application.Current.Shutdown();
+        _realExit = true;
+        Close(); // OnClosing 完成一次保存；新实例等待本进程退出后再获取锁。
     }
 
     /// <summary>
@@ -214,34 +243,7 @@ public partial class MainWindow : Window
     /// 此时留在原进程继续用（显卡温度等不依赖内核驱动的指标照常工作），不弹错误框、不退出。
     /// </para>
     /// </summary>
-    public void RestartElevated()
-    {
-        try
-        {
-            var exe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exe))
-                return;
-
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = exe,
-                UseShellExecute = true,
-                Verb = "runas",
-            });
-        }
-        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-        {
-            return;
-        }
-        catch (Exception)
-        {
-            return;
-        }
-
-        _realExit = true; // 重启流程不允许被"关闭到托盘"拦截
-        _viewModel.Stop();
-        Application.Current.Shutdown();
-    }
+    public void RestartElevated() => RestartApplication(elevated: true);
 
     /// <summary>标题栏"性能模式"：切换低开销运行模式（按钮高亮 + 状态栏提示）。</summary>
     private void OnTogglePerformanceMode(object sender, RoutedEventArgs e)
@@ -293,10 +295,7 @@ public partial class MainWindow : Window
             }
 
             FocusCard.DataContext = core;
-            FocusCard.PlacementTarget = (UIElement)sender;
-            // 戳一戳（v1.28.0）：每次弹卡换一句招呼（不计入戳击）——
-            // 含换核重开弹卡的路径（此时 Opened 事件不触发，必须在这里问候）。
-            core.Poke.Greet();
+            FocusCard.PlacementTarget = this;
             FocusCard.IsOpen = true;
         }
     }
@@ -304,23 +303,9 @@ public partial class MainWindow : Window
     /// <summary>当前弹出卡片对应的核（其 Level 的 Progress 变化驱动 EXP 条补间）。</summary>
     private DashboardCoreVm? _focusedCore;
 
-    /// <summary>弹卡打开（v1.27.0）：内容缩放 + 淡入登场；布局完成后把 EXP 条从 0 生长到当前值。</summary>
+    /// <summary>弹卡使用原生淡入；根元素不缩放，避免高 DPI 下尺寸与弹窗定位不一致。</summary>
     private void OnFocusCardOpened(object? sender, EventArgs e)
     {
-        var scale = new System.Windows.Media.ScaleTransform(0.94, 0.94);
-        FocusCardRoot.RenderTransform = scale;
-
-        var ease = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut };
-        scale.BeginAnimation(
-            System.Windows.Media.ScaleTransform.ScaleXProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(320)) { EasingFunction = ease });
-        scale.BeginAnimation(
-            System.Windows.Media.ScaleTransform.ScaleYProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(320)) { EasingFunction = ease });
-        FocusCardRoot.BeginAnimation(
-            OpacityProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(220)));
-
         // 等弹卡内容完成一次布局（ActualWidth 可用），再播 EXP 条生长动画。
         Dispatcher.BeginInvoke(
             System.Windows.Threading.DispatcherPriority.Loaded,
@@ -350,34 +335,6 @@ public partial class MainWindow : Window
             AnimateExpFill(_focusedCore.Level.Progress);
     }
 
-    /// <summary>
-    /// 戳一戳（v1.28.0）：点击小核灵 → 弹跳一下 + 换一句状态台词。
-    /// </summary>
-    /// <remarks>
-    /// 弹跳是 ScaleTransform 补间、只在点击瞬间播一次（140ms 自动回弹）；
-    /// 台词由 <see cref="CorePokeQuips"/> 按当前状态/占用/等级现挑。
-    /// 全部会话级：无持久化、无常驻动画，不给软渲染引擎添持续负载。
-    /// </remarks>
-    private void OnPokeCreatureClick(object sender, MouseButtonEventArgs e)
-    {
-        e.Handled = true;
-        if (_focusedCore is null)
-            return;
-
-        var bounce = new System.Windows.Media.Animation.DoubleAnimation(1.28, TimeSpan.FromMilliseconds(140))
-        {
-            AutoReverse = true,
-            EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut },
-        };
-        PokeFaceScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, bounce);
-        PokeFaceScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, bounce);
-
-        var core = _focusedCore;
-        core.Poke.Poke(
-            core.StatusLabel, core.Usage, core.FreqText,
-            core.Level.Level, core.Level.IsMaxLevel, core.Level.Progress);
-    }
-
     /// <summary>EXP 条宽度补间（ease-out 700ms）。EXP 每个采样周期都在涨，
     /// 相邻两次补间首尾衔接，视觉上就是一条持续生长的经验条。</summary>
     private void AnimateExpFill(double progress)
@@ -387,6 +344,13 @@ public partial class MainWindow : Window
             return;
 
         var target = Math.Clamp(progress, 0, 1) * trackWidth;
+        // 日常 EXP 增量通常远小于一个像素，直接同步宽度，避免每秒重启 700ms 布局动画。
+        if (Math.Abs(target - ExpFill.ActualWidth) < 1)
+        {
+            ExpFill.BeginAnimation(WidthProperty, null);
+            ExpFill.Width = target;
+            return;
+        }
         ExpFill.BeginAnimation(
             WidthProperty,
             new System.Windows.Media.Animation.DoubleAnimation(target, TimeSpan.FromMilliseconds(700))
