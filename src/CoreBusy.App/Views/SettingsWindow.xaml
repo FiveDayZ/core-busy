@@ -419,10 +419,15 @@
 
                         <CheckBox x:Name="AutoStartCheck" Style="{StaticResource OptionCheck}" Margin="0,10,0,0"
                                   Content="开机自动启动" />
-                        <TextBlock Text="写入当前用户的注册表 Run 项（无需管理员权限），可在任务管理器「启动应用」页随时关闭；"
+                        <TextBlock Text="写入当前用户的注册表 Run 项（无需管理员权限），开机后静默运行在托盘、不弹出主界面；可在任务管理器「启动应用」页随时关闭。"
                                    Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
-                        <TextBlock Text="注册表为唯一事实来源 —— 在别处手动禁用后，这里打开时会如实显示未启用。"
+                        <TextBlock Text="注册表为唯一事实来源 —— 在别处手动禁用后，这里打开时会如实显示未启用。手动双击程序启动仍会显示主窗口。"
                                    Style="{StaticResource OptionHint}" Margin="25,3,0,0" />
+
+                        <CheckBox x:Name="ElevationPromptCheck" Style="{StaticResource OptionCheck}" Margin="0,10,0,0"
+                                  Content="未提权启动时询问是否以管理员身份重启" />
+                        <TextBlock Text="部分设备的 CPU 功耗必须提权才读得到；开启后启动时若只差权限会询问一次。关闭后不再询问，可点概览卡的提示标手动提权。"
+                                   Style="{StaticResource OptionHint}" Margin="25,5,0,0" />
 
                         <Border Height="1" Background="{StaticResource CoreBusyBorderWeakBrush}" Margin="0,12,0,10" />
 

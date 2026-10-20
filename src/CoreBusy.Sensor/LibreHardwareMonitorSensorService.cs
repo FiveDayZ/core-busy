@@ -70,7 +70,8 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
                 Badge: "⚠ 需提权",
                 Detail: "未以管理员身份运行：PawnIO 内核驱动只对提升后的进程开放，"
                         + "本机 CPU 温度/功耗、风扇转速、硬盘温度读不到（显卡温度走 NVML，不受影响）。"
-                        + "点此以管理员身份重新启动，温度/功耗即刻可读。");
+                        + "点此以管理员身份重新启动，温度/功耗即刻可读。",
+                NeedsElevation: true);
         }
 
         return SensorAccessInfo.Ok;
@@ -236,6 +237,13 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
         {
             // 单次采样失败按空快照处理，避免监控线程崩溃；UI 沿用上次值/显示缺省。
         }
+
+        // 功耗看门狗（v1.38.0）：曾经读到过封装功耗、随后连续一个窗口都读不到 —— 典型成因是
+        // 睡眠唤醒/驱动失联后 LHM 采集栈停摆（实测表现："管理员运行中途功耗变 '-'，
+        // 重启应用才恢复"），重建整个 Computer（Close + Open）等价于用户手动重启应用的
+        // 恢复路径，不需要人守着。AMD 平台没有 MSR 兜底（见 MsrPackagePowerReader 注释），
+        // 这条路是它唯一的自动恢复手段。
+        TrackPackagePowerHealth(packagePower);
 
         // GPU / 存储（v1.16.0 状态栏扩展；v1.20.1 起存储另带活动度供功耗模型使用）：
         // GPU 每帧读（NVML/nvapi 开销小），硬盘 SMART 查询较重，按 StorageRefreshSeconds
@@ -905,6 +913,59 @@ public sealed class LibreHardwareMonitorSensorService : IHardwareSensorService
 
     private MsrPackagePowerReader? _msrPackagePower;
     private bool _msrPackagePowerResolved;
+
+    // ── 功耗看门狗（v1.38.0）──────────────────────────────────────────
+    // 状态机：_everHadPackagePower 记"这台机器确实有功耗读数"（从未有过 = 没传感器/没提权，
+    // 不是失联，不进看门狗）；之后功耗连续丢失 PowerLossRecoverFrames 帧 → 重建采集栈，
+    // 一次会话最多试 MaxRecoverAttempts 次（重建无效说明不是瞬时故障，反复 Close/Open 只会
+    // 空转并拖慢采样帧），直到功耗真的恢复时计数器才清零，为下一次失联重新武装。
+
+    /// <summary>功耗读数连续丢失多少帧后判定采集栈失能并重建（≈1 分钟 @1Hz）。</summary>
+    private const int PowerLossRecoverFrames = 60;
+
+    /// <summary>功耗恢复前允许的采集栈重建次数上限；功耗恢复后清零重新计数。</summary>
+    private const int MaxPowerRecoverAttempts = 3;
+
+    private bool _everHadPackagePower;
+    private int _powerLostStreak;
+    private int _powerRecoverAttempts;
+
+    /// <summary>跟踪封装功耗读数的存续状态，失联超窗时重建 LHM 采集栈（见上节注释）。</summary>
+    private void TrackPackagePowerHealth(double? packagePower)
+    {
+        if (packagePower is not null)
+        {
+            _everHadPackagePower = true;
+            _powerLostStreak = 0;
+            _powerRecoverAttempts = 0;
+            return;
+        }
+
+        if (!_everHadPackagePower)
+            return;
+
+        if (++_powerLostStreak < PowerLossRecoverFrames || _powerRecoverAttempts >= MaxPowerRecoverAttempts)
+            return;
+
+        _powerLostStreak = 0;
+        _powerRecoverAttempts++;
+
+        try
+        {
+            // Close + Open 是 LibreHardwareMonitor 官方支持的重建路径（设置变更即走这条）：
+            // 重新枚举硬件、重开内核驱动。MSR 兜底读数器持有独立的 PawnIO 模块句柄，
+            // 一并释放重建，避免引用已关闭的驱动。
+            _computer.Close();
+            _computer.Open();
+            _msrPackagePower?.Dispose();
+            _msrPackagePower = null;
+            _msrPackagePowerResolved = false;
+        }
+        catch (Exception)
+        {
+            // 重建失败保持现状（读数维持 "-"）；未达次数上限前下个窗口还会再试。
+        }
+    }
 
     /// <summary>
     /// Intel RAPL 封装能量计数器（MSR 0x611）差分求功率的兜底读数。

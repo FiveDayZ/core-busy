@@ -24,12 +24,20 @@ using CoreBusy.Windows.Wmi;
 public partial class App : Application
 {
     private DashboardViewModel? _runningViewModel;
+
+    /// <summary>静默启动参数（v1.38.0）：开机自启写入，启动后直接进托盘不弹主界面。</summary>
+    private const string MinimizedArgument = Services.AutoStartService.SilentArgument;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+
+        // 静默启动（v1.38.0）：开机自启的 Run 值带 --minimized，主窗口短暂 Show 后藏进托盘；
+        // 手动双击 exe 启动不带该参数，照常显示主界面。
+        var startMinimized = Array.IndexOf(e.Args, MinimizedArgument) >= 0;
 
         if (!AppRestart.WaitForPreviousProcess(e.Args))
         {
@@ -58,6 +66,9 @@ public partial class App : Application
         // 载入用户设置（规范 §6/§7）：主题模式与核心分区口径需在窗口构建前决定。
         var settings = SettingsStore.Load();
 
+        // 旧版开机自启值原地迁移（v1.38.0）：补写 --minimized，已注册用户重启一次即静默化。
+        AutoStartService.EnsureSilentArg();
+
         // 接入真实设备采集：拓扑(WMI/GetLogicalProcessorInformationEx) + 占用率(Performance Counter)
         // + 温度/功耗/频率/风扇(LibreHardwareMonitorLib) + 进程排行(CPU 时间增量)。
         // 初始化失败时明确降级为不可用，禁止随机数据进入真实账本。
@@ -70,6 +81,28 @@ public partial class App : Application
         var sensorAccess = monitor is MockCpuMonitorService
             ? null
             : LibreHardwareMonitorSensorService.ProbeKernelAccess();
+
+        // 提权询问（v1.38.0）：部分设备的封装功耗必须提权才读得到。启动探测出"只差权限"
+        // 时问一次，用户同意就走 UAC 重启 —— 静默开机最大的风险是功耗永远 "-" 却没人看见，
+        // 这个询问把"需要动手"这件事在启动瞬间递到用户面前。探测结果为"缺驱动"不问
+        //（提权解决不了），用户关掉开关或已提权也不问。
+        if (sensorAccess is { NeedsElevation: true } && settings.ElevationPrompt && settings.SensorsEnabled)
+        {
+            var choice = MessageBox.Show(
+                "CPU 温度/功耗等传感器需要以管理员身份运行才能读取。\n\n"
+                + "是否以管理员身份重启 CORE-BUSY？\n"
+                + "（选择\"否\"将继续以普通权限运行，功耗等读数显示为 -）",
+                "CORE-BUSY",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (choice == MessageBoxResult.Yes && TryRelaunchElevated(e.Args))
+            {
+                Shutdown(); // 新进程带 --restart-from 等本实例退出后接管单实例锁。
+                return;
+            }
+            // 用户拒绝 UAC / 重启失败：留在本实例继续普通权限运行。
+        }
 
         // 品牌主题：Auto 按 CPU 厂商（Intel/AMD/未知→Neutral），也可手动锁定；
         // 必须在主窗口构建前应用（StaticResource 解析时机）。
@@ -90,13 +123,61 @@ public partial class App : Application
         var window = new MainWindow(viewModel);
 
         MainWindow = window;
-        window.Show();
+        if (startMinimized)
+        {
+            // 静默启动：先 Show（触发源初始化：InstanceActivation.Attach + 采样启动），
+            // 再由 EnterTraySilently 藏进托盘 —— 同一批 Dispatcher 操作，不呈现任何一帧。
+            window.ShowActivated = false; // 开机不抢焦点。
+            window.Show();
+            window.EnterTraySilently();
+        }
+        else
+        {
+            window.Show();
+        }
 
         // 启动自动检查更新（v1.31.0）：窗口出现后异步执行，检查失败保持静默 ——
         // 启动路径上的任何网络问题都不该打扰用户。发现新版本时弹询问框。
-        if (settings.CheckUpdatesOnStartup)
+        // 静默启动（v1.38.0）跳过：开机弹窗与"不打扰"的初衷相悖，等用户打开界面后的
+        // 下一次正常启动再查。
+        if (settings.CheckUpdatesOnStartup && !startMinimized)
         {
             _ = RunStartupUpdateCheckAsync(window);
+        }
+    }
+
+    /// <summary>
+    /// 以管理员身份重启当前实例（v1.38.0，启动提权询问触发）。
+    /// 透传本次启动的命令行参数（剔除 --restart-from 对 —— 那指向的是上一代进程，
+    /// 带过去会让新进程空等），UAC 取消（Win32 1223）与启动失败都返回 false，
+    /// 调用方留在当前普通权限实例继续运行。
+    /// </summary>
+    private static bool TryRelaunchElevated(string[] args)
+    {
+        var extra = new List<string>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], AppRestart.WaitArgument, StringComparison.Ordinal))
+            {
+                i++; // 连同 pid 一起跳过。
+                continue;
+            }
+            extra.Add(args[i]);
+        }
+
+        try
+        {
+            using var process = Process.Start(AppRestart.StartInfo(elevated: true, extra));
+            return process is not null;
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            return false; // 用户在 UAC 弹窗点了"否"：不是错误，继续普通权限运行。
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("elevated relaunch", ex);
+            return false;
         }
     }
 

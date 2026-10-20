@@ -146,6 +146,30 @@ public partial class MainWindow : Window
         Activate();
     }
 
+    /// <summary>
+    /// 静默启动进托盘（v1.38.0）：开机自启带 <c>--minimized</c> 时由 App.OnStartup 调用。
+    /// <para>
+    /// 前置条件是窗口已经 Show 过一次 —— 采样与实例激活都在 <see cref="OnSourceInitialized"/>
+    /// 里挂接，跳过 Show 两者都不会启动（隐藏窗口等于没采数）。所以路径是"Show → Hide"，
+    /// 同一批 Dispatcher 操作内完成，软件渲染不会呈现任何一帧，用户看不到闪窗；
+    /// 随后弹一次托盘气泡，让用户知道程序已在后台运行。
+    /// </para>
+    /// </summary>
+    public void EnterTraySilently()
+    {
+        ShowActivated = true; // 之后从托盘恢复（Show）仍可正常抢焦点。
+        Hide();
+        EnsureTrayIcon();
+
+        try
+        {
+            _trayIcon?.ShowBalloon("CORE-BUSY", "已在后台运行：双击托盘图标打开界面。", 3000);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
     /// <summary>托盘"退出"：标记显式退出后走正常关闭流程。</summary>
     private void ExitFromTray()
     {

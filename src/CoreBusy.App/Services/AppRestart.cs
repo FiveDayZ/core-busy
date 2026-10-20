@@ -5,9 +5,14 @@ using System.Globalization;
 
 internal static class AppRestart
 {
-    private const string WaitArgument = "--restart-from";
+    internal const string WaitArgument = "--restart-from";
 
-    internal static ProcessStartInfo StartInfo(bool elevated)
+    /// <param name="elevated">true = 走 UAC（runas）提权启动。</param>
+    /// <param name="extraArgs">
+    /// 追加的命令行参数（v1.38.0）：提权重启来自开机自启时需要把 --minimized 带过去，
+    /// 否则用户确认 UAC 后反而弹出主窗口，与静默启动的预期相悖。
+    /// </param>
+    internal static ProcessStartInfo StartInfo(bool elevated, IReadOnlyList<string>? extraArgs = null)
     {
         var start = new ProcessStartInfo
         {
@@ -17,6 +22,11 @@ internal static class AppRestart
         };
         start.ArgumentList.Add(WaitArgument);
         start.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        if (extraArgs is not null)
+        {
+            foreach (var arg in extraArgs)
+                start.ArgumentList.Add(arg);
+        }
         return start;
     }
 

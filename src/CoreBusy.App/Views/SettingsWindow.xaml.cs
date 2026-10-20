@@ -97,6 +97,7 @@ public partial class SettingsWindow : Window
         SensorsCheck.IsChecked = settings.SensorsEnabled;
         GameCheck.IsChecked = settings.GameDetectionEnabled;
         CloseToTrayCheck.IsChecked = settings.CloseToTray;
+        ElevationPromptCheck.IsChecked = settings.ElevationPrompt;
 
         // 开机启动以注册表实况回显（v1.26.5）：settings.json 不记这份状态，
         // 用户在任务管理器里手动禁用后这里必须如实显示未启用。
@@ -354,6 +355,7 @@ public partial class SettingsWindow : Window
             SensorsEnabled = SensorsCheck.IsChecked == true,
             GameDetectionEnabled = GameCheck.IsChecked == true,
             CloseToTray = CloseToTrayCheck.IsChecked == true,
+            ElevationPrompt = ElevationPromptCheck.IsChecked == true,
             CheckUpdatesOnStartup = CheckUpdatesCheck.IsChecked == true,
             TelemetryEnabled = TelemetryCheck.IsChecked == true,
             TelemetryServerUrl = TelemetryUrlBox.Text.Trim(),

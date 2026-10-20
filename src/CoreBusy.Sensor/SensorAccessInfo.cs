@@ -11,7 +11,11 @@ namespace CoreBusy.Sensor;
 /// </summary>
 /// <param name="Badge">概览卡右上角的短标（空 = 内核访问正常，不显示任何提示）。</param>
 /// <param name="Detail">完整解释：既写进 debug.log，也作为提示的 Tooltip。</param>
-public sealed record SensorAccessInfo(string Badge, string Detail)
+/// <param name="NeedsElevation">
+/// 问题根因是否为"未提权"（v1.38.0）。启动流程据此决定是否弹出提权重启询问 ——
+/// 用结构化字段而不是去匹配徽标文案：文案会改，字段语义不会。
+/// </param>
+public sealed record SensorAccessInfo(string Badge, string Detail, bool NeedsElevation = false)
 {
     /// <summary>内核访问正常（已提权且驱动就绪）。</summary>
     public static readonly SensorAccessInfo Ok = new(string.Empty, "内核驱动可用（已提权且 PawnIO 就绪）");

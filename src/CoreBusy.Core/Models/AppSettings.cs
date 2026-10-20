@@ -61,6 +61,12 @@ public sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
 
     /// <summary>
+    /// 启动未提权时询问是否以管理员身份重启（v1.38.0）。部分设备的封装功耗必须提权才读得到，
+    /// 静默错过了这个提示，用户只会看到永远的 "-"。默认开启；关闭后可在概览卡提示标手动提权。
+    /// </summary>
+    public bool ElevationPrompt { get; set; } = true;
+
+    /// <summary>
     /// 启动时自动检查 GitHub Releases 更新（v1.31.0）。默认开启；旧版 settings.json
     /// 缺该字段时 System.Text.Json 不会触碰属性，保持初始值 true（向后兼容）。
     /// </summary>
