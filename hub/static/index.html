@@ -195,15 +195,17 @@
       <div class="stat"><div class="k">在线设备</div><div class="v ok" id="st-on">-</div></div>
       <div class="stat"><div class="k">全网累计运行</div><div class="v" id="st-rt">-</div></div>
       <div class="stat"><div class="k">全网累计功耗</div><div class="v" id="st-en">-</div></div>
+      <div class="stat"><div class="k">全网累计电费</div><div class="v" id="st-cost">-<small id="st-price"></small></div></div>
     </div>
     <div class="tbl-wrap">
       <table>
         <thead><tr>
           <th>设备</th><th>CPU</th><th>系统 / 版本</th><th>最近在线</th>
           <th class="num sortable" id="th-rt" onclick="setSort('runtime_total')">累计运行</th><th class="num sortable" id="th-en" onclick="setSort('energy_total')">累计功耗</th>
+          <th class="num">累计电费</th>
           <th class="num sortable" id="th-pl" onclick="setSort('power_last')">上次功耗</th><th class="num sortable" id="th-pk" onclick="setSort('power_peak')">峰值功耗</th><th>逐核等级</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="9" class="dim">加载中…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="10" class="dim">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -242,6 +244,7 @@
 "use strict";
 const STAGES = ["幼体","成长期","成熟期","究极期","传说"];
 const INVITE_ST = { active:"有效", used:"已用", expired:"已过期" };
+let PRICE = 0.6259;   // 电价(元/kWh)，以服务端下发为准
 const $ = id => document.getElementById(id);
 
 function token() { return localStorage.getItem("corebusy_hub_token") || ""; }
@@ -258,6 +261,10 @@ function fmtWh(v) {
   return v >= 1000 ? (v/1000).toFixed(2) + " kWh" : v.toFixed(1) + " Wh";
 }
 function fmtW(v) { return v == null ? "-" : v.toFixed(1) + " W"; }
+function fmtCost(wh) {
+  if (wh == null) return "-";
+  return "¥" + (wh / 1000 * PRICE).toFixed(2);
+}
 function fmtSeen(ts) {
   if (!ts) return "-";
   const dt = new Date(ts), diff = (Date.now() - dt.getTime()) / 1000;
@@ -304,6 +311,8 @@ function renderDevices(devs) {
   $("st-on").textContent = on;
   $("st-rt").textContent = fmtDur(rt);
   $("st-en").textContent = fmtWh(en);
+  $("st-cost").childNodes[0].textContent = fmtCost(en);
+  $("st-price").textContent = "（" + PRICE + " 元/kWh）";
   let list = devs;
   if (SORT.key) {
     const k = SORT.key, dir = SORT.dir;
@@ -321,10 +330,11 @@ function renderDevices(devs) {
       + "<td><span class='dot " + (isOnline(d.last_seen) ? "on" : "off") + "'></span>" + fmtSeen(d.last_seen) + "</td>"
       + "<td class='num'>" + fmtDur(d.runtime_total) + "</td>"
       + "<td class='num'>" + fmtWh(d.energy_total) + "</td>"
+      + "<td class='num'>" + fmtCost(d.energy_total) + "</td>"
       + "<td class='num'>" + fmtW(d.power_last) + "</td>"
       + "<td class='num'>" + fmtW(d.power_peak) + "</td>"
       + "<td>" + coreSummary(safeGrades(d.cores_grade)) + "</td></tr>";
-  }).join("") : '<tr><td colspan="9" class="dim">暂无设备上报</td></tr>';
+  }).join("") : '<tr><td colspan="10" class="dim">暂无设备上报</td></tr>';
 }
 function safeGrades(text) { try { return text ? JSON.parse(text) : null; } catch { return null; } }
 
@@ -413,6 +423,7 @@ async function showDetail(id) {
       + "<div><b>最近在线</b>" + fmtSeen(d.last_seen) + "</div>"
       + "<div><b>累计运行</b>" + fmtDur(d.runtime_total) + "</div>"
       + "<div><b>累计功耗</b>" + fmtWh(d.energy_total) + "</div>"
+      + "<div><b>累计电费</b>" + fmtCost(d.energy_total) + "</div>"
       + "<div><b>上次功耗</b>" + fmtW(d.power_last) + "</div>"
       + "<div><b>峰值功耗</b>" + fmtW(d.power_peak) + "</div>"
       + "</div>"
@@ -445,8 +456,9 @@ function chartHtml(hist) {
 async function load() {
   $("err").textContent = ""; $("err").style.display = "none";
   try {
-    const devs = (await api("/api/devices")).devices;
-    renderDevices(devs);
+    const data = await api("/api/devices");
+    if (data.price_per_kwh != null) PRICE = data.price_per_kwh;
+    renderDevices(data.devices);
     setConn(true);
     // 探测管理员权限：成功 → 显示注册码管理入口；设备 Token → 仅设备总览
     try {

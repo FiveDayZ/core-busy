@@ -7,6 +7,7 @@
   COREBUSY_HUB_TOKEN        管理员 Token; 缺省时首次启动自动生成到 <data>/token.txt
   COREBUSY_HUB_HISTORY_KEEP 每设备心跳流水保留条数, 默认 5000
   COREBUSY_HUB_INVITE_TTL   注册码有效期(小时), 默认 24
+  COREBUSY_HUB_PRICE        电价(元/kWh), 看板换算累计电费用, 默认 0.6259
 
 鉴权模型 (v1.35.0 注册制):
   管理员 Token  —— 看板/管理 API; 心跳也收(旧版设备平滑迁移)。
@@ -29,6 +30,7 @@ DATA_DIR = os.environ.get("COREBUSY_HUB_DATA", "/data")
 TOKEN_ENV = os.environ.get("COREBUSY_HUB_TOKEN", "").strip()
 HISTORY_KEEP = max(10, int(os.environ.get("COREBUSY_HUB_HISTORY_KEEP", "5000")))
 INVITE_TTL_HOURS = max(1, int(os.environ.get("COREBUSY_HUB_INVITE_TTL", "24")))
+PRICE_PER_KWH = float(os.environ.get("COREBUSY_HUB_PRICE", "0.6259"))
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MAX_BODY = 256 * 1024
@@ -444,7 +446,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._is_admin():
                 self._send_json(401, {"error": "unauthorized"})
                 return
-            self._send_json(200, {"devices": list_devices()})
+            self._send_json(200, {"devices": list_devices(), "price_per_kwh": PRICE_PER_KWH})
             return
         if path.startswith("/api/devices/"):
             if not self._is_admin():
