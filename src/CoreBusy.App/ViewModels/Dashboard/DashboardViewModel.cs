@@ -1442,7 +1442,11 @@ public sealed class DashboardViewModel : ObservableObject
 
             // v1.32.1 加下限：0 GHz 不是合法读数（通电必 >0）。恒 0 的失效传感器读数
             // 曾把 MaxGhz 钉死在 0，峰值恒显 "0.00 GHz"。
+            // v1.38.1 加上限：有效频率在部分 AMD 平台会短时爆表（用户实测 7940HS 峰值 13.24 GHz）。
+            // 采集层已按「绝对上限 + 本机最高 P-state」拦下越界帧，这里再守一道绝对门 ——
+            // 账本只升不降，任何一条漏进来的污染值都是永久的。判定与采集层同源。
             if (!double.IsNaN(core.EffectiveFrequencyGHz) && core.EffectiveFrequencyGHz > 0
+                && EffectiveClockPlausibility.IsPlausible(core.EffectiveFrequencyGHz * 1000.0, double.NaN)
                 && (double.IsNaN(entry.MaxGhz) || core.EffectiveFrequencyGHz > entry.MaxGhz))
             {
                 entry.MaxGhz = core.EffectiveFrequencyGHz;

@@ -3,6 +3,7 @@ namespace CoreBusy.App.Services;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CoreBusy.Core.Models;
 using CoreBusy.Core.Progression;
 
 /// <summary>
@@ -425,11 +426,21 @@ public static class CoreExpStore
         //   · 该状态下已累计的 PeakSeconds 是在失效阈值下记的假证据 → 一并作废（NaN）。
         // MaxGhz > 0 的账本不受影响：其 PeakSeconds 是按 0.99×MaxGhz 的有效阈值累计的。
         // （随后由 >0 门与采集层 0 值守卫保证不再产生新的污染。）
+        //
+        // v1.38.1 同构修复「超上限」：用户实测（7940HS）峰值账本落成 13.24 GHz ——
+        // 该 SKU 最大加速 5.2 GHz，13.24 GHz 是 LHM 有效频率比值短时爆表留下的尖峰，
+        // 而账本只升不降，一帧噪声即永久钉死，且此后 0.99×13.24 的峰值档阈值再也够不着，
+        // 峰值累计时长永远停在污染前。判定与采集层同源（EffectiveClockPlausibility），
+        // 上限同样取 10 GHz：它是"任何消费级平台都不可能"的硬门，不依赖运行时参照 ——
+        // 账本落盘时没存过 P-state 参照，这里也无从复原。
+        // PeakSeconds 一并作废：它的语义是「打到账本峰值带 99% 的累计时长」，
+        // 峰值这一锚点被证伪后，该时长已无对应阈值可解释；保留会出现
+        // 「峰值 - / 累计 2.8 分钟」的自相矛盾，比丢失更能误导。
         public CoreExpEntry ToEntry()
         {
             var maxGhz = Parse(MaxGhz);
             var peakSeconds = Parse(PeakSeconds);
-            if (double.IsNaN(maxGhz) || maxGhz <= 0)
+            if (!EffectiveClockPlausibility.IsPlausible(maxGhz * 1000.0, double.NaN))
             {
                 maxGhz = double.NaN;
                 if (peakSeconds > 0)

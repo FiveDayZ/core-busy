@@ -443,6 +443,16 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
         {
             _logicalUsage = logicalUsage ?? [];
 
+            // 本帧的 P-state 峰值先整体算出来（v1.38.1）：有效频率的合理性参照与本机最高档
+            // 都必须取**本帧全部核**的最大值。逐核边读边更新会让先遍历到的核拿到更旧的参照，
+            // 判定结果随核序变化 —— 同一次采样里同一颗核的表现不该取决于它排第几。
+            foreach (var pstate in sensor.CoreClockMhz)
+            {
+                if (pstate.Value > _maxCoreClockMhz
+                    && EffectiveClockPlausibility.IsPlausible(pstate.Value, double.NaN))
+                    _maxCoreClockMhz = pstate.Value;
+            }
+
             // 每物理核心取线程最大值；任一线程缺失时核心总量未知，不能冒充空闲。
             for (var i = 0; i < _cores.Count; i++)
             {
@@ -462,7 +472,10 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                 //   届时须改为按逻辑处理器索引匹配而不是按序号。
                 double mhz = double.NaN;
                 var source = CoreFrequencySource.Unknown;
-                if (sensor.CoreClockMhz.TryGetValue(i, out var sensorMhz) && sensorMhz > 100)
+                // 绝对上限门（v1.38.1）：P-state 时钟同样会被解码故障污染，
+                // >10 GHz 的读数宁可降级为「-」，也不能当档位画上 Tile。
+                if (sensor.CoreClockMhz.TryGetValue(i, out var sensorMhz) && sensorMhz > 100
+                    && EffectiveClockPlausibility.IsPlausible(sensorMhz, double.NaN))
                 {
                     mhz = sensorMhz;
                     source = CoreFrequencySource.SensorPState;
@@ -485,15 +498,16 @@ public sealed class WindowsCpuMonitorService : ICpuMonitorService, IDisposable
                 _coreFreqGhz[i] = mhz > 100 ? Math.Round(mhz / 1000.0, 2) : double.NaN;
                 _coreFreqSource[i] = source;
 
-                if (sensor.CoreClockMhz.TryGetValue(i, out var pstateMhz) && pstateMhz > _maxCoreClockMhz)
-                    _maxCoreClockMhz = pstateMhz;
-
                 var effectiveMhz = double.NaN;
                 // 0 MHz 不是读数（v1.32.1 修错）：部分平台的 "(Effective)" 传感器存在但恒报 0，
                 // 放行会把账本 MaxGhz 写成 0（显示"峰值 0.00 GHz"），且峰值档阈值 0×0.99=0
                 // 让所有帧都被判为在峰值档、时长空转累加。空闲核的有效频率实测最低 39 MHz，
                 // 恒 0 只可能是失效读数——按"没有证据"降级 NaN，与显示口径的 mhz>100 守卫同源。
-                if (sensor.CoreEffectiveClockMhz.TryGetValue(i, out var sensorEffective) && sensorEffective > 0)
+                // 合理性门（v1.38.1）：同一传感器在部分 AMD 平台会短时爆出数倍于真实频率的比值
+                // （用户实测 7940HS 出现 13.24 GHz），绝对门 + 本机最高 P-state 相对门见
+                // EffectiveClockPlausibility；越界即按"没有证据"降级，不进峰值账本。
+                if (sensor.CoreEffectiveClockMhz.TryGetValue(i, out var sensorEffective) && sensorEffective > 0
+                    && EffectiveClockPlausibility.IsPlausible(sensorEffective, _maxCoreClockMhz))
                     effectiveMhz = sensorEffective;
 
                 _coreEffectiveGhz[i] = effectiveMhz >= 0 ? Math.Round(effectiveMhz / 1000.0, 3) : double.NaN;
